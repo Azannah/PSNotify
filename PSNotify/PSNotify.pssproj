@@ -42,7 +42,12 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="bin\Growl.Connector.dll" />
+    <Compile Include="bin\Growl.CoreLibrary.dll" />
     <Compile Include="Script.ps1" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="bin\" />
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <Target Name="Build" />
