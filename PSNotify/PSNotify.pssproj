@@ -28,26 +28,26 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="growl\Growl.Connector.dll" />
+    <Compile Include="growl\Growl.CoreLibrary.dll" />
+    <Compile Include="Script.ps1" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="growl\" />
+  </ItemGroup>
+  <ItemGroup>
     <Reference Include="Growl.Connector, Version=2.0.0.0, Culture=neutral, PublicKeyToken=980c2339411be384">
       <Name>Growl.Connector</Name>
       <AssemblyName>Growl.Connector.dll</AssemblyName>
-      <HintPath>bin\Growl.Connector.dll</HintPath>
+      <HintPath>growl\Growl.Connector.dll</HintPath>
       <Private>True</Private>
     </Reference>
     <Reference Include="Growl.CoreLibrary, Version=2.0.0.0, Culture=neutral, PublicKeyToken=13e59d82e007b064">
       <Name>Growl.CoreLibrary</Name>
       <AssemblyName>Growl.CoreLibrary.dll</AssemblyName>
-      <HintPath>bin\Growl.CoreLibrary.dll</HintPath>
+      <HintPath>growl\Growl.CoreLibrary.dll</HintPath>
       <Private>True</Private>
     </Reference>
-  </ItemGroup>
-  <ItemGroup>
-    <Compile Include="bin\Growl.Connector.dll" />
-    <Compile Include="bin\Growl.CoreLibrary.dll" />
-    <Compile Include="Script.ps1" />
-  </ItemGroup>
-  <ItemGroup>
-    <Folder Include="bin\" />
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <Target Name="Build" />
