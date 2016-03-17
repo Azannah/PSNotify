@@ -194,7 +194,7 @@ function Get-GrowlConnector {
 
   process {
     
-    <#try {
+    try {
       if ($PSCmdlet.ParameterSetName -eq "local") {
         $growl_connector = new-object "Growl.Connector.GrowlConnector"
       } else {
@@ -203,36 +203,252 @@ function Get-GrowlConnector {
     } catch {
       # Log error
       throw $_
-    }#>
+    }
 
     $custom_object = New-Module {
-      #$growl = $growl_connector
+      Param(
+        [Growl.Connector.GrowlConnector]$growl_connector
+      )
 
-      try {
-        if ($PSCmdlet.ParameterSetName -eq "local") {
-          $growl_connector = new-object "Growl.Connector.GrowlConnector"
-        } else {
-          $growl_connector = new-object "Growl.Connector.GrowlConnector" $Password, $Computer, $Port
-        }
-      } catch {
-        # Log error
-        throw $_
+      function Script:create_application ($application_name, $application_icon) {
+        $application = New-Object "Growl.Connector.Application" $application_name
+        $application.Icon = $application_icon
+
+        return $application
       }
-
+      
       function Notify ([Growl.Connector.Notification]$notification) {
 
       }
 
-      function getPassword () {
-        return [string]$growl_connector.Password
-      }
-
-      Export-ModuleMember -Function "Notify", "getPassword"
-    } -AsCustomObject
+      Export-ModuleMember -Function "Notify"
+    } -AsCustomObject -ArgumentList $growl_connector
 
     return $custom_object
   }
 
+}
+
+function New-GrowlNotification {
+  #[CmdletBinding(DefaultParameterSetName="standard")]
+  [CmdletBinding()]
+  Param(
+    [Parameter(
+      HelpMessage="Specify the name of the application sending this notification",
+      Mandatory=$true,
+      #ParameterSetName="standard",
+      Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [Alias('Application','App')]
+    [string]
+    # A string indicating the application to which a notification is relavant (Splunk, My Folder Monitor, etc.)
+    $ApplicationName,
+    [Parameter(
+      HelpMessage="Optionally, provide an icon graphic as a file path to identify the application",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      #Position=11, # Out of order, I know...
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [Alias('ApplicationNameIcon','AppIcon')]
+    [string]
+    # Optional. Specify a path to a graphic file that will be used to represent the application. This path is evaluated on the system displaying the notification, so the path must already exist on that system.
+    $ApplicationIcon,
+    [Parameter(
+      HelpMessage="What type of notification is this ('Warning','TaskComplete')?",
+      Mandatory=$true,
+      #ParameterSetName="standard",
+      Position=1,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [string]
+    # Each application can have one or more types (specified here as a string without white space). For example ApplicationName = "Splunk", NotificationType = "SystemOffline"
+    $NotificationType,
+    [Parameter(
+      HelpMessage="Optionally, provide a friendly description of the notification type",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      #Position=2,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [string]
+    # Optional. Provides a friendly description of the NotificationType which is displayed to the notification's recipients. This description is remembered by the host for the specified NotificationType.
+    $NotificationTypeDescription,
+    [Parameter(
+      HelpMessage="Optionally, provide an icon graphic as a file path to identify the notification type",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      #Position=12,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [string]
+    # Optional. Specify a path to a graphic file that will be used to represent the notification type. If provided, this graphic overrides the ApplicationIcon graphic. This path is evaluated on the system displaying the notification, so the path must already exist on that system.
+    $NotificationTypeIcon,
+    [Parameter(
+      HelpMessage="What should the notification be titled?",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      Position=3,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [string]
+    # Notifications must have a title or heading specified as a plain text string
+    $Title,
+    [Parameter(
+      HelpMessage="What's the message?",
+      Mandatory=$true,
+      #ParameterSetName="standard",
+      Position=4,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [string]
+    # The plain text message of the notification
+    $Message,
+    [Parameter(
+      HelpMessage="Optionally, provide the path to a graphic file to associate with this message",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      #Position=14,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [string]
+    # Optional. Specify a path to a graphic file that will be displayed with this notification. If provided, this graphic overrides the ApplicationIcon and NotificationTypeIcon graphics. This path is evaluated on the system displaying the notification, so the path must already exist on that system.
+    $MessageIcon,
+    [Parameter(
+      HelpMessage="Specify the notification's priority (Emergency, High, Moderate, Normal, VeryLow)",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      Position=5,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [ValidateSet("Emergency", "High", "Moderate", "Normal", "VeryLow")]
+    [Growl.Connector.Priority]
+    # Optional. Defines the notification's priority as either Emergency, High, Moderate, Normal, or VeryLow. Defaults to Normal priority.
+    $Priority = [Growl.Connector.Priority]::Normal,
+    [Parameter(
+      HelpMessage="Optionally, provide an ID that can be used to identify and update this notification",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      Position=6,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [string]
+    # Optional. The supplied string becomes an ID that can be used to identify and update the notification after it has been issued with subseqent notifications.
+    $NotificationID,
+    [Parameter(
+      HelpMessage="Provide a string ID used to distinguish callbacks for this notification",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      Position=2,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [string]
+    # An ID specified as a string that's used to identify callbacks for this notification
+    $CallbackID = "unspecified",
+    [Parameter(
+      HelpMessage="What data should be returned by the callback?",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      #Position=6,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [Object]
+    # Can be an arbitrary type relevant to the callback event handler registered with the GrowlConnector object. Unless modified by the receiving instance of Growl, the callback data defined here is simply returned as-is.
+    $CallbackData,
+    [Parameter(
+      HelpMessage="What's the data type returned by the callback (default 'string')?",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      #Position=7,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [Object]
+    # The Type does not need to be of a recognized language type – it can be any value that has meaning to the callback event handler. Defaults to "string" when not specified.
+    $CallbackDataType = "string",
+    [Parameter(
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      #Position=8,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [URI]
+    # If specified, the CallbackURL supplied as a [URI] castable object is used instead of the callback event handler. No callback data or type is included in the URL query. Any query parameters must be constructed manually.
+    $CallbackURL = $null,
+    <#[Parameter(
+      Mandatory=$false,
+      ParameterSetName="standard",
+      Position=9,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [string]
+    # Specifies the method used by the CallbackURL, POST or GET. Defaults to GET if not specified.
+    $CallbackURLMethod = "GET", # 2do: The manual mentions this, but the DLL I have doesn't have the functions described...#>
+    [Parameter(
+      HelpMessage="Should the message remain on-screen until clicked by the user?",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      #Position=10,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [switch]
+    # An ID specified as a string that's used to identify callbacks for this notification
+    $Sticky
+  )
+
+  Process {
+    try {
+      $growl_notification = New-Object "Growl.Connector.Notification" $ApplicationName, $NotificationType, $CallbackID, $Title, $Message
+    } catch {
+      # Log
+      throw $_
+    }
+
+    if (Test-Path Variable:MessageIcon) {
+      $growl_notification.Icon = $MessageIcon
+    }
+
+    $growl_notification.Priority = $Priority
+
+    if (Test-Path Variable:NotificationID) {
+      $growl_notification.CoalescingID = $NotificationID
+    }
+
+    if ($Sticky) {
+      $growl_notification.Sticky = $true
+    }
+
+    Add-Member -InputObject $growl_notification -MemberType NoteProperty -Name "ApplicationIcon" -Value $ApplicationIcon
+    Add-Member -InputObject $growl_notification -MemberType NoteProperty -Name "NotificationTypeIcon" -Value $NotificationTypeIcon
+    Add-Member -InputObject $growl_notification -MemberType NoteProperty -Name "NotificationTypeDescription" -Value $NotificationTypeDescription
+
+    #if ((Test-Path Variable:CallbackURL) -and (($CallbackURL.PSObject.Properties.name -match "Segments") -and (-not $CallbackURL.Segments.Count -eq 0))) {
+    if ((Test-Path Variable:CallbackURL) -and (-not $CallbackURL -eq $null)) {
+      $callback_context = New-Object "Growl.Connector.CallbackContext" $CallbackURL
+    } elseif (Test-Path Variable:CallbackData) {
+      $callback_context = New-Object "Growl.Connector.CallbackContext" $CallbackData, $CallbackDataType
+    }
+
+    Add-Member -InputObject $growl_notification -MemberType NoteProperty -Name "Context" -Value $callback_context
+
+    return $growl_notification
+  }
 }
 
 $Script:resources = @{
@@ -247,7 +463,22 @@ $Script:resources = @{
 
 $Script:resources | %{New-Object PSObject -Property $_} | Script:Write-EmbeddedResource | Script:Load-Assembly
 
-[System.AppDomain]::CurrentDomain.GetAssembly("Growl.Connector.GrowlConnector")
+[System.Reflection.Assembly]::GetAssembly("Growl.Connector.GrowlConnector")
 
 $test_connector = Get-GrowlConnector -Computer "TestComputer" -Password "TestPassword"
-Write-Host "Password: " + $test_connector.getPassword()
+$test_notification = New-GrowlNotification -ApplicationName "Test Application" `
+                                           -ApplicationIcon "C:\Icons\Test_Application.png" `
+                                           -NotificationType "TestMessage" `
+                                           -NotificationTypeDescription "This is a friendly description of the test message notification type" `
+                                           -NotificationTypeIcon "C:\Icons\TestMessage.png" `
+                                           -Title "This is a test!" `
+                                           -Message "You have received a test message!" `
+                                           -MessageIcon "C:\Icons\Message_Icon.png" `
+                                           -Priority VeryLow `
+                                           -CallbackID "Generic_Callback" `
+                                           -CallbackData "matthew.johnson" `
+                                           -CallbackDataType "string" `
+                                           -CallbackURL "" `
+                                           -Sticky
+
+$test_notification | fl *
