@@ -192,6 +192,46 @@ function Get-GrowlConnector {
     $Port = 23053
   )
 
+  process {
+    
+    <#try {
+      if ($PSCmdlet.ParameterSetName -eq "local") {
+        $growl_connector = new-object "Growl.Connector.GrowlConnector"
+      } else {
+        $growl_connector = new-object "Growl.Connector.GrowlConnector" $Password, $Computer, $Port
+      }
+    } catch {
+      # Log error
+      throw $_
+    }#>
+
+    $custom_object = New-Module {
+      #$growl = $growl_connector
+
+      try {
+        if ($PSCmdlet.ParameterSetName -eq "local") {
+          $growl_connector = new-object "Growl.Connector.GrowlConnector"
+        } else {
+          $growl_connector = new-object "Growl.Connector.GrowlConnector" $Password, $Computer, $Port
+        }
+      } catch {
+        # Log error
+        throw $_
+      }
+
+      function Notify ([Growl.Connector.Notification]$notification) {
+
+      }
+
+      function getPassword () {
+        return [string]$growl_connector.Password
+      }
+
+      Export-ModuleMember -Function "Notify", "getPassword"
+    } -AsCustomObject
+
+    return $custom_object
+  }
 
 }
 
@@ -207,4 +247,7 @@ $Script:resources = @{
 
 $Script:resources | %{New-Object PSObject -Property $_} | Script:Write-EmbeddedResource | Script:Load-Assembly
 
-[System.AppDomain]::CurrentDomain.GetAssemblies()
+[System.AppDomain]::CurrentDomain.GetAssembly("Growl.Connector.GrowlConnector")
+
+$test_connector = Get-GrowlConnector -Computer "TestComputer" -Password "TestPassword"
+Write-Host "Password: " + $test_connector.getPassword()
