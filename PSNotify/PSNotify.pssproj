@@ -54,6 +54,11 @@
       <HintPath>\Windows\Microsoft.NET\Framework\v2.0.50727\System.DirectoryServices.Protocols.dll</HintPath>
       <Private>True</Private>
     </Reference>
+    <Reference Include="System.DirectoryServices.Protocols, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a">
+      <Name>System.DirectoryServices.Protocols</Name>
+      <AssemblyName>System.DirectoryServices.Protocols.dll</AssemblyName>
+      <HintPath>C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.0\System.DirectoryServices.Protocols.dll</HintPath>
+    </Reference>
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <Target Name="Build" />

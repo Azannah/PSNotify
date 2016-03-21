@@ -313,10 +313,27 @@ function Get-ADLDAPGroupMember {
         
         return $search_attribute
       }
+
+      function Script:query_ldap($connection, $target, $search_filter, $search_scope, [string[]]$attributes) {
+        # Reference: https://msdn.microsoft.com/en-us/library/bb332056.aspx
+        $search_request = New-Object System.DirectoryServices.Protocols.SearchRequest $target, $search_filter, $search_scope, $attributes
+        $search_response = [System.DirectoryServices.Protocols.SearchResponse] $connection.SendRequest($search_request)
+      }
     }
 
     Process {
       $connection = bind_ldap_connection $Server $Port $Secure $Credentials
+
+      switch (Script:get_identity_type $Identity) {
+        "dn" {}
+        "objectSid" {$Identity = Script:query_ldap $connection $SearchBase "(objectSid=$Identity)" "Subtree" $null}
+        "objectGUID" {$Identity = Script:query_ldap $connection $SearchBase "(objectGUID=$Identity)" "Subtree" $null}
+        "sAMAccountName" {}
+      }
+      
+      "(&(objectCategory=person)(objectClass=user)(memberOf:1.2.840.113556.1.4.1941:=CN=MyGroup,OU=User,OU=Groups,OU=Security,DC=domain,DC=com))"
+      
+      $search_request = New-Object System.DirectoryServices.Protocols.SearchRequest $SearchBase
       <#if (-not (Test-Path Variable:Port) -and $Secure) {
         $Port = 636
       } elseif (-not (Test-Path Variable:Port)) {
@@ -805,6 +822,44 @@ function Test-Certificate {
 			}
 		}
 	}
+}
+
+$Script:config = @{
+  call_list = @(
+    @{
+      <# Look up members of the ldap group 'IT Staff', which contains user accounts #>
+      source = "ldap_group";
+      path = "S-1-5-21-324234234-1231-12352"; #This is junk text representing the SID for Infrastructure staff
+      <# Use all methods available when attempting to contact group members #>
+      methods = @("all");
+      <# Members of this group recive notifications for the following priorities #>
+      priorities = @("Emergency", "High");
+      <# Cache the resulting list in case the ldap server isn't available #>
+      cache = $true
+    },
+    @{
+      <# Look up members of the ldap group 'Infrastructure Staff', which contains user accounts #>
+      source = "ldap_group";
+      path = "S-1-5-21-324234234-1231-12352"; #This is junk text representing the SID for Infrastructure staff
+      <# Use all methods available when attempting to contact group members #>
+      methods = @("email");
+      <# Members of this group recive notifications for the following priorities #>
+      priorities = @("Emergency", "High", "Medium");
+      <# Cache the resulting list in case the ldap server isn't available #>
+      cache = $true
+    },
+    @{
+      <# Look up members of the ldap group 'Infrastructure Staff Computers', which contains computer accounts #>
+      source = "ldap_group";
+      path = "S-1-5-21-324234234-1231-12352"; #This is junk text representing the SID for Infrastructure staff
+      <# Use all methods available when attempting to contact group members #>
+      methods = @("all");
+      <# Members of this group recive notifications for the following priorities #>
+      priorities = @("Emergency", "High", "Medium");
+      <# Cache the resulting list in case the ldap server isn't available #>
+      cache = $true
+    }
+  )
 }
 
 $Script:resources = @{
