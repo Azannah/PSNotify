@@ -143,15 +143,45 @@ function Script:Write-EmbeddedResource {
 
     $Name = ($Path -replace "\\$", "") + "\$Name"
 
-    try {
-      Set-Content -Path $Name -Value ([System.Convert]::FromBase64String($Base64)) -Encoding Byte
-      return (Get-ChildItem $Name)
-    } catch {
-      # Need to log error
-      throw $_
+    # 2do: need to handle pre-existing files better - existing file might be different version of DLL
+    if (-not (Test-Path $Name)) {
+      try {
+        Set-Content -Path $Name -Value ([System.Convert]::FromBase64String($Base64)) -Encoding Byte
+        return (Get-ChildItem $Name)
+      } catch {
+        # Need to log error
+        throw $_
+      }
     }
   }
 }
+
+# 2do: formalize this function
+function Decompress-GZipItem{
+  Param(
+    $Infile,
+    $Outfile = ($infile -replace '\.gz$','')
+  )
+
+  $input = New-Object System.IO.FileStream $inFile, ([IO.FileMode]::Open), ([IO.FileAccess]::Read), ([IO.FileShare]::Read)
+  $output = New-Object System.IO.FileStream $outFile, ([IO.FileMode]::Create), ([IO.FileAccess]::Write), ([IO.FileShare]::None)
+  $gzipStream = New-Object System.IO.Compression.GzipStream $input, ([IO.Compression.CompressionMode]::Decompress)
+
+  $buffer = New-Object byte[](1024)
+  
+  while($true){
+    $read = $gzipstream.Read($buffer, 0, 1024)
+    
+    if ($read -le 0) {break}
+    
+    $output.Write($buffer, 0, $read)
+  }
+
+  $gzipStream.Close()
+  $output.Close()
+  $input.Close()
+}
+
 
 function Get-ADLDAPGroupMember {
   [CmdletBinding()]
@@ -196,7 +226,18 @@ function Get-ADLDAPGroupMember {
       $Identity,
       [Parameter(
         #HelpMessage="Identity of the target AD group",
-        Mandatory=$true,
+        Mandatory=$false,
+        #ParameterSetName="remote",
+        #Position=0,
+        ValueFromPipeline=$false,
+        ValueFromPipelineByPropertyName=$true,
+        ValueFromRemainingArguments=$false)]
+      #[Alias('Target')]
+      [string[]]
+      $Attributes,
+      [Parameter(
+        #HelpMessage="Identity of the target AD group",
+        Mandatory=$false,
         #ParameterSetName="remote",
         #Position=0,
         ValueFromPipeline=$false,
@@ -209,53 +250,53 @@ function Get-ADLDAPGroupMember {
         #HelpMessage="Identity of the target AD group",
         Mandatory=$true,
         #ParameterSetName="remote",
-        #Position=0,
+        Position=1,
         ValueFromPipeline=$false,
-        ValueFromPipelineByPropertyName=$true,
-        ValueFromRemainingArguments=$false)]
-      #[Alias('Target')]
-      [switch]
-      $Recursive,
-      [Parameter(
-        #HelpMessage="Identity of the target AD group",
-        Mandatory=$true,
-        #ParameterSetName="remote",
-        #Position=0,
-        ValueFromPipeline=$false,
-        ValueFromPipelineByPropertyName=$true,
+        ValueFromPipelineByPropertyName=$false,
         ValueFromRemainingArguments=$false)]
       #[Alias('Target')]
       [string]
       $Server,
       [Parameter(
         #HelpMessage="Identity of the target AD group",
-        Mandatory=$true,
+        Mandatory=$false,
         #ParameterSetName="remote",
         #Position=0,
         ValueFromPipeline=$false,
-        ValueFromPipelineByPropertyName=$true,
+        ValueFromPipelineByPropertyName=$false,
         ValueFromRemainingArguments=$false)]
       #[Alias('Target')]
       [int]
       $Port,
       [Parameter(
         #HelpMessage="Identity of the target AD group",
-        Mandatory=$true,
+        Mandatory=$false,
         #ParameterSetName="remote",
-        #Position=0,
+        Position=2,
         ValueFromPipeline=$false,
         ValueFromPipelineByPropertyName=$true,
         ValueFromRemainingArguments=$false)]
       #[Alias('Target')]
       [switch]
-      $Secure,
+      $Recursive = $false,
       [Parameter(
         #HelpMessage="Identity of the target AD group",
         Mandatory=$false,
         #ParameterSetName="remote",
-        #Position=0,
+        Position=3,
         ValueFromPipeline=$false,
         ValueFromPipelineByPropertyName=$true,
+        ValueFromRemainingArguments=$false)]
+      #[Alias('Target')]
+      [switch]
+      $Secure = $false,
+      [Parameter(
+        #HelpMessage="Identity of the target AD group",
+        Mandatory=$false,
+        #ParameterSetName="remote",
+        Position=4,
+        ValueFromPipeline=$false,
+        ValueFromPipelineByPropertyName=$false,
         ValueFromRemainingArguments=$false)]
       #[Alias('Target')]
       [pscredential]
@@ -264,6 +305,19 @@ function Get-ADLDAPGroupMember {
 
     Begin {
       Add-Type -AssemblyName System.DirectoryServices.Protocols
+
+      if ($Port -eq 0) {
+        if ($Secure) {
+          #Default, non-global catalog, secure LDAP port (default LDAPS GC port is 3269)
+          $Port = 636
+        } else {
+          #Default, non-global catalog LDAP port (default LDAP GC port is 3268)
+          $Port = 389
+        }
+      }
+
+      $connection = bind_ldap_connection $Server $Port $Secure $Credentials
+      $root_context = Script:get_root_context $connection
 
       function Script:bind_ldap_connection([string]$ldap_server, [string]$ldap_port, [bool]$ldap_secure, [pscredential]$ldap_credentials) {
         [System.DirectoryServices.Protocols.LdapDirectoryIdentifier]$identifier = New-Object System.DirectoryServices.Protocols.LdapDirectoryIdentifier $ldap_server, $ldap_port
@@ -297,12 +351,6 @@ function Get-ADLDAPGroupMember {
         return $connection
       }
 
-      <#function Script:decrypt_secure_string($secure_string) {
-        return [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
-          [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure_string)
-        )
-      }#>
-
       function Script:get_identity_type($identity_string) {
         $search_attribute = "sAMAccountName"
         switch -Regex ($identity_string) {
@@ -314,43 +362,85 @@ function Get-ADLDAPGroupMember {
         return $search_attribute
       }
 
+      function Script:get_root_context($connection) {
+        return (Script:query_ldap $connection  $null "(&(objectClass=*))" "Base" "rootdomainnamingcontext").Entries[0].Attributes["rootdomainnamingcontext"][0]
+      }
+
       function Script:query_ldap($connection, $target, $search_filter, $search_scope, [string[]]$attributes) {
         # Reference: https://msdn.microsoft.com/en-us/library/bb332056.aspx
         $search_request = New-Object System.DirectoryServices.Protocols.SearchRequest $target, $search_filter, $search_scope, $attributes
-        $search_response = [System.DirectoryServices.Protocols.SearchResponse] $connection.SendRequest($search_request)
+
+        try {
+          $search_response = [System.DirectoryServices.Protocols.SearchResponse] $connection.SendRequest($search_request)
+        } catch {
+          # log
+          throw $_
+        }
+        return $search_response
       }
     }
 
     Process {
+      <#if ($Port -eq 0) {
+        if ($Secure) {
+          #Default, non-global catalog, secure LDAP port (default LDAPS GC port is 3269)
+          $Port = 636
+        } else {
+          #Default, non-global catalog LDAP port (default LDAP GC port is 3268)
+          $Port = 389
+        }
+      }
+
       $connection = bind_ldap_connection $Server $Port $Secure $Credentials
+      $root_context = Script:get_root_context $connection#>
 
-      switch (Script:get_identity_type $Identity) {
-        "dn" {}
-        "objectSid" {$Identity = Script:query_ldap $connection $SearchBase "(objectSid=$Identity)" "Subtree" $null}
-        "objectGUID" {$Identity = Script:query_ldap $connection $SearchBase "(objectGUID=$Identity)" "Subtree" $null}
-        "sAMAccountName" {}
-      }
-      
-      "(&(objectCategory=person)(objectClass=user)(memberOf:1.2.840.113556.1.4.1941:=CN=MyGroup,OU=User,OU=Groups,OU=Security,DC=domain,DC=com))"
-      
-      $search_request = New-Object System.DirectoryServices.Protocols.SearchRequest $SearchBase
-      <#if (-not (Test-Path Variable:Port) -and $Secure) {
-        $Port = 636
-      } elseif (-not (Test-Path Variable:Port)) {
-        $Port = 389
+      if ($SearchBase.Length -eq 0) {
+        $SearchBase = $root_context
       }
 
-      if ($Secure) {
-        $connection = "LDAPS://$Server`:$Port/"
+      if ($Recursive) {
+        $search_scope = [System.DirectoryServices.Protocols.SearchScope]::Subtree
       } else {
-        $connection = "LDAP://$Server`:$Port/"
+        $search_scope = [System.DirectoryServices.Protocols.SearchScope]::Base
       }
 
-      $connection += "$SearchBase"
+      $identity_type = Script:get_identity_type $Identity
+      
+      if ($identity_type -notlike "dn") {
+        $query_results = Script:query_ldap $connection $root_context "($identity_type=$Identity)" "Subtree" $null
+        #$query_results = Script:query_ldap $connection $SearchBase "($identity_type=$Identity)" "Subtree" $null
+        #$query_results = Script:query_ldap $connection (Script:get_root_context $connection) "($identity_type=$Identity)" "Subtree" $null
+        
+        # All possible Identity values represent a unique object, so only one result should be returned
+        # 2do: Validate inputs to eliminate wildcards in the parameters.
+        $Identity = $query_results.Entries[0].DistinguishedName
+      }
 
-      $filter = 
+      # Now that we have the DN, get all entries that belong to the group, including nested membershipship, within the SearchBase
+      #$query_results = Script:query_ldap $connection $SearchBase "(memberOf:1.2.840.113556.1.4.1941:=$Identity)" "Subtree" $null
+      $query_results = Script:query_ldap $connection $SearchBase "(memberOf:1.2.840.113556.1.4.1941:=$Identity)" $search_scope $Attributes
 
-      $ds_entry = New-Object System.DirectoryServices.DirectoryEntry($connection, $Credentials.UserName, (decrypt_secure_string $Credentials.Password))#>
+      # Compile results into something like what you'd get from Get-ADGroupMember
+      $return_objects = @()
+
+      $query_results.Entries | % {
+        $attributes_hash = @{}
+        $directory_attributes = $_.Attributes
+
+        $directory_attributes.Keys | % {
+          if ($directory_attributes.Item($_).Count -gt 1) {
+            $key = $_
+            $attributes_hash[$key] = @()
+
+            0..($directory_attributes.Item($_).Count - 1)| %{ $attributes_hash[$key] += $directory_attributes.Item($key)[$_] }
+          } else {
+            $attributes_hash[$_] = $directory_attributes.Item($_)[0]
+          }
+        }
+        $return_objects += $attributes_hash
+      }
+
+      return $return_objects
     }
 
 }
@@ -692,6 +782,30 @@ function New-GrowlNotification {
   }
 }
 
+function Process-SplunkAlert {
+  Process {
+    if (-not (Test-Path Env:\SPLUNK_ARG_0)) {
+      throw [System.ArgumentNullException] "Splunk alert action environment variables not availabe - probably running with the wrong context"
+    }
+
+    $splunk = @{
+      script_name = (get-item Env:\SPLUNK_ARG_0).Value;
+      event_count = (get-item Env:\SPLUNK_ARG_1).Value;
+      search_terms = (get-item Env:\SPLUNK_ARG_2).Value;
+      query_string = (get-item Env:\SPLUNK_ARG_3).Value;
+      alert_name = (get-item Env:\SPLUNK_ARG_4).Value;
+      trigger_reason = (get-item Env:\SPLUNK_ARG_5).Value;
+      report_url = (get-item Env:\SPLUNK_ARG_6).Value;
+      #not_used = (get-item Env:\SPLUNK_ARG_7).Value;
+      results_gzip = (get-item Env:\SPLUNK_ARG_8).Value;
+    }
+    
+    # Get list of users and computer to alert
+
+
+  }
+}
+
 function Test-Certificate {
 <#
 .Synopsis
@@ -824,43 +938,43 @@ function Test-Certificate {
 	}
 }
 
-$Script:config = @{
+<#$Script:config = @{
   call_list = @(
     @{
-      <# Look up members of the ldap group 'IT Staff', which contains user accounts #>
+      <# Look up members of the ldap group 'IT Staff', which contains user accounts # >
       source = "ldap_group";
       path = "S-1-5-21-324234234-1231-12352"; #This is junk text representing the SID for Infrastructure staff
-      <# Use all methods available when attempting to contact group members #>
+      <# Use all methods available when attempting to contact group members # >
       methods = @("all");
-      <# Members of this group recive notifications for the following priorities #>
+      <# Members of this group recive notifications for the following priorities # >
       priorities = @("Emergency", "High");
-      <# Cache the resulting list in case the ldap server isn't available #>
+      <# Cache the resulting list in case the ldap server isn't available # >
       cache = $true
     },
     @{
-      <# Look up members of the ldap group 'Infrastructure Staff', which contains user accounts #>
+      <# Look up members of the ldap group 'Infrastructure Staff', which contains user accounts # >
       source = "ldap_group";
       path = "S-1-5-21-324234234-1231-12352"; #This is junk text representing the SID for Infrastructure staff
-      <# Use all methods available when attempting to contact group members #>
+      <# Use all methods available when attempting to contact group members # >
       methods = @("email");
-      <# Members of this group recive notifications for the following priorities #>
+      <# Members of this group recive notifications for the following priorities # >
       priorities = @("Emergency", "High", "Medium");
-      <# Cache the resulting list in case the ldap server isn't available #>
+      <# Cache the resulting list in case the ldap server isn't available # >
       cache = $true
     },
     @{
-      <# Look up members of the ldap group 'Infrastructure Staff Computers', which contains computer accounts #>
+      <# Look up members of the ldap group 'Infrastructure Staff Computers', which contains computer accounts # >
       source = "ldap_group";
       path = "S-1-5-21-324234234-1231-12352"; #This is junk text representing the SID for Infrastructure staff
-      <# Use all methods available when attempting to contact group members #>
+      <# Use all methods available when attempting to contact group members # >
       methods = @("all");
-      <# Members of this group recive notifications for the following priorities #>
+      <# Members of this group recive notifications for the following priorities # >
       priorities = @("Emergency", "High", "Medium");
-      <# Cache the resulting list in case the ldap server isn't available #>
+      <# Cache the resulting list in case the ldap server isn't available # >
       cache = $true
     }
   )
-}
+}#>
 
 $Script:resources = @{
   Name = "Growl.CoreLibrary.dll";
@@ -874,7 +988,7 @@ $Script:resources = @{
 
 $Script:resources | %{New-Object PSObject -Property $_} | Script:Write-EmbeddedResource | Script:Load-Assembly
 
-[System.Reflection.Assembly]::GetAssembly("Growl.Connector.GrowlConnector")
+<#[System.Reflection.Assembly]::GetAssembly("Growl.Connector.GrowlConnector")
 
 $test_connector = Get-GrowlConnector -Computer "DESKTOP-BOJS2AA" -Password "123QWEasd"
 
@@ -882,7 +996,7 @@ $test_connector.AddCallbackHandler({
   Param($response, $context)
   Write-Host "Response:`n$response"
   Write-Host "`nContext:`n$($context|fl *)"
-})
+})#>
 
 <#
 $test_notification = New-GrowlNotification -ApplicationName "Test Application" `
@@ -928,10 +1042,14 @@ $test_connector.Notify((New-GrowlNotification -ApplicationName "Test Application
                                               -Sticky))
 #>
 
-Get-ADLDAPGroupMember -Identity "CN=ApplicationXtender BOE Complaints User,OU=Application,OU=User Role Groups,OU=Security Groups,DC=sec,DC=sos,DC=state,DC=nm,DC=us" `
-                      -SearchBase "DC=SEC,DC=SOS,DC=STATE,DC=NM,DC=US" `
+#-Identity "CN=ApplicationXtender BOE Complaints User,OU=Application,OU=User Role Groups,OU=Security Groups,DC=sec,DC=sos,DC=state,DC=nm,DC=us" `
+#-Credentials (Get-Credential) `
+#-SearchBase "OU=Application,OU=User Role Groups,OU=Security Groups,DC=sec,DC=sos,DC=state,DC=nm,DC=us" `
+#-Port 636 `
+#-Attributes "samaccountname","memberof" `
+Get-ADLDAPGroupMember -Identity "S-1-5-21-4015811867-4186938304-2392806155-2408" `
+                      -SearchBase "OU=Staff,OU=Personnel,DC=sec,DC=sos,DC=state,DC=nm,DC=us" `
+                      -Attributes "samaccountname","memberof" `
                       -Server "sosdc1.sec.sos.state.nm.us" `
-                      -Port 636 `
-                      -Credentials (Get-Credential) `
                       -Secure `
                       -Recursive
