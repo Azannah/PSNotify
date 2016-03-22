@@ -783,6 +783,46 @@ function New-GrowlNotification {
 }
 
 function Process-SplunkAlert {
+  [CmdletBinding()]
+  Param(
+    [Parameter(
+      #HelpMessage="Specify the name of the application sending this notification",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    #[Alias('Application','App')]
+    [string[]]
+    # An array of computer names to contact with Growl notifications
+    $GrowlAlert,
+    [Parameter(
+      #HelpMessage="Specify the name of the application sending this notification",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    #[Alias('Application','App')]
+    [string[]]
+    # An array of email to txt addresses used to alert staff via SMS
+    $TxtAlert,
+    [Parameter(
+      #HelpMessage="Specify the name of the application sending this notification",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    #[Alias('Application','App')]
+    [string[]]
+    # A location on the network where information related to alerts can be stored
+    $AlertRepository
+  )
+
   Process {
     if (-not (Test-Path Env:\SPLUNK_ARG_0)) {
       throw [System.ArgumentNullException] "Splunk alert action environment variables not availabe - probably running with the wrong context"
@@ -800,8 +840,16 @@ function Process-SplunkAlert {
       results_gzip = (get-item Env:\SPLUNK_ARG_8).Value;
     }
     
-    # Get list of users and computer to alert
+    # Get the raw output of the alert issued by Splunk and decompress it
+    if (Test-Path $splunk.results_gzip -PathType Leaf -Include *.gz) {
+      $results_file = ($env:TEMP + ($splunk.results_gzip -ireplace "\.gz",""))
+      Decompress-GZipItem -Infile $splunk.results_gzip -Outfile $decompressed_results
+      $results = Import-Csv -Path $results_file
+    }
 
+    # Build the Growl Message
+    $growl_title = $splunk.alert_name
+    $growl_message = 
 
   }
 }
