@@ -558,6 +558,145 @@ function Get-GrowlConnector {
 
 }
 
+function Merge-Tokens {
+<#
+.SYNOPSIS
+Replaces tokens in a block of text with a specified value.
+.DESCRIPTION
+Replaces tokens in a block of text with a specified value.
+.PARAMETER template
+The block of text that contains text and tokens to be replaced.
+.PARAMETER tokens
+Token name/value hashtable.
+.EXAMPLE
+ $content = Get-Content .\template.txt | Merge-Tokens -tokens @{FirstName: 'foo'; LastName: 'bar'}
+Pass template to function via pipeline.
+.NOTES
+  Original source: https://github.com/craibuc/PsTokens/blob/master/Merge-Tokens.ps1
+#>
+
+    [CmdletBinding()] 
+    
+    param (
+        [Parameter(Mandatory=$True, ValueFromPipeline=$true)]
+        [AllowEmptyString()]
+        [String] $template,
+
+        [Parameter(Mandatory=$true)]
+        [HashTable] $tokens
+    ) 
+
+    begin {
+      Write-Verbose "$($MyInvocation.MyCommand.Name)::Begin"
+
+      function Script:is_iterable_token($token) {
+        #if ($match.Value -match "^\s*{{\s*@?") {
+        if ($token -match "^[{]{2}") {
+          $count = 2 # The input token is wrapped: {{token_name remainder {{inside stuff}}}}
+        } else {
+          $count = 1 # The input token had been unwrapped: remainder {{inside stuff}}
+        }
+
+        if ([RegEx]::Matches($token, "[{]{2}").Count -ge $count) {
+          return $true
+        }
+        return $false
+      }
+
+      function Script:unwrap_token($token) {
+        $token_name = Script:get_token_name $token
+        $regex_string = "^\s*{{\s*@?$token_name(?<remainder>.*)}}$"
+        return [RegEx]::Match($token, $regex_string, "Singleline").Groups['remainder'].Value
+      }
+
+      function Script:get_token_name($token) {
+        return [RegEx]::Match($token, "^\s*{{\s*@?(?<token_name>([^\s}{]|(?<d>[}{])(?!\k<d>))+)").Groups['token_name'].Value
+      }
+    }
+
+    process {
+        Write-Verbose "$($MyInvocation.MyCommand.Name)::Process" 
+
+        # adapted based on this Stackoverflow answer: http://stackoverflow.com/a/29041580/134367
+        try {
+            <# (((?<Open>\{{2})([^}{]|(?<![}{])[}{](?![}{]))*)+((?<Close-Open>\}{2})(?(Open)([^}{]|(?<![}{])[}{](?![}{])))*)+)+(?(Open)(?!))
+            [regex]::Replace( $template, '{{(?<tokenName>[\w\.]+)}}', {
+              # {{TOKEN}}
+              param($match)
+
+              $tokenName = $match.Groups['tokenName'].Value
+              Write-Debug $tokenName
+              
+              $tokenValue = Invoke-Expression "`$tokens.$tokenName"
+              Write-Debug $tokenValue
+
+              if ($tokenValue) {
+                # there was a value; return it
+                return $tokenValue
+              } 
+              else {
+                # non-matching token; return token
+                return $match
+              }
+            })
+            #>
+
+            [regex]::Replace( $template, "(((?<Open>\{{2})([^}{]|(?<![}{])[}{](?![}{]))*)+((?<Close-Open>\}{2})(?(Open)([^}{]|(?<![}{])[}{](?![}{])))*)+)+(?(Open)(?!))", {
+              Param($match)
+
+              $token_name = Script:get_token_name $match.Value
+
+              if (-not $tokens.ContainsKey($token_name)) {
+                # 2do: Handle
+              }
+
+              $token_remainder = Script:unwrap_token $match.Value
+
+              $tokens[$token_name] | % {
+                $token_value = $_
+                $replacement_string = ""
+                
+                # If we're looking at a recurring pattern, recurse
+                if (Script:is_iterable_token $match.Value) {
+                  $token_value | % {
+                    # Validate the input type - the only valid input is a hashtable
+                    if (-not ($_.GetType() -eq [hashtable])) {
+                      # It might be more useful to receive a message with unmatched tokens, instead of no message at all
+                      #throw [System.ArgumentException] "The provided input for $token_name should be a hashtable, but is of type $($_.GetType().Name)"
+                      # 2do: log
+                      return $match.Value
+                    }
+
+                    Merge-Tokens -tokens $_ -template $token_remainder 
+                  } | % { $replacement_string += $_ }
+                
+                # Otherwise...
+                } else {
+                  $token_value | % { 
+                    # Should be a single-valued object (not an array or a collection)
+                    if ($_.GetType().FullName -Match "collection|\[\]") {}
+                    $replacement_string += ($_ + $token_remainder) 
+                  }
+                }
+              }
+
+              #Get token name
+              Write-Host (Script:get_token_name $match.Value)
+
+            })
+
+
+        }
+        catch {
+            Write-Error $_
+        }
+
+    }
+
+    end { Write-Verbose "$($MyInvocation.MyCommand.Name)::End" }
+
+}
+
 function New-GrowlNotification {
   #[CmdletBinding(DefaultParameterSetName="standard")]
   [CmdletBinding()]
@@ -820,24 +959,38 @@ function Process-SplunkAlert {
     #[Alias('Application','App')]
     [string[]]
     # A location on the network where information related to alerts can be stored
-    $AlertRepository
+    $AlertRepository,
+    [Parameter(
+      #HelpMessage="Specify the name of the application sending this notification",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    #[Alias('Application','App')]
+    [hashtable]
+    # A location on the network where information related to alerts can be stored
+    $Splunk = $null
   )
 
   Process {
-    if (-not (Test-Path Env:\SPLUNK_ARG_0)) {
+    if (($Splunk -eq $null) -and (-not (Test-Path Env:\SPLUNK_ARG_0))) {
       throw [System.ArgumentNullException] "Splunk alert action environment variables not availabe - probably running with the wrong context"
     }
 
-    $splunk = @{
-      script_name = (get-item Env:\SPLUNK_ARG_0).Value;
-      event_count = (get-item Env:\SPLUNK_ARG_1).Value;
-      search_terms = (get-item Env:\SPLUNK_ARG_2).Value;
-      query_string = (get-item Env:\SPLUNK_ARG_3).Value;
-      alert_name = (get-item Env:\SPLUNK_ARG_4).Value;
-      trigger_reason = (get-item Env:\SPLUNK_ARG_5).Value;
-      report_url = (get-item Env:\SPLUNK_ARG_6).Value;
-      #not_used = (get-item Env:\SPLUNK_ARG_7).Value;
-      results_gzip = (get-item Env:\SPLUNK_ARG_8).Value;
+    if ($Splunk -eq $null) {
+      $Splunk = @{
+        script_name = (get-item Env:\SPLUNK_ARG_0).Value;
+        event_count = (get-item Env:\SPLUNK_ARG_1).Value;
+        search_terms = (get-item Env:\SPLUNK_ARG_2).Value;
+        query_string = (get-item Env:\SPLUNK_ARG_3).Value;
+        alert_name = (get-item Env:\SPLUNK_ARG_4).Value;
+        trigger_reason = (get-item Env:\SPLUNK_ARG_5).Value;
+        report_url = (get-item Env:\SPLUNK_ARG_6).Value;
+        #not_used = (get-item Env:\SPLUNK_ARG_7).Value;
+        results_gzip = (get-item Env:\SPLUNK_ARG_8).Value;
+      }
     }
     
     # Get the raw output of the alert issued by Splunk and decompress it
@@ -848,8 +1001,25 @@ function Process-SplunkAlert {
     }
 
     # Build the Growl Message
+    # Start by attempting to load a message template
+    $template_file_name = [RegEx]::Replace($splunk.alert_name, '[\\~#%&*{}/:<>?|\"-]', "_")
+    $template_file_name = [RegEx]::Replace($template_file_name, '\s+', " ")
+    $template_file = (Get-ChildItem -Path ".\",".\templates" -Filter "$template_file_name.*")
+    
+    
+    if ($template_file.Count -gt 0) {
+      try {
+        # If multiple templates matches exist, only use the first
+        $message_template = Get-Content -Path $template_file[0].FullName -ErrorAction Stop
+      } catch {
+        # Log
+        # If we're unable to get the contents of the template file, revert to the default template
+        # 2do: create a default template...
+      }
+    }
+
     $growl_title = $splunk.alert_name
-    $growl_message = 
+    #$growl_message = 
 
   }
 }
@@ -1095,9 +1265,25 @@ $test_connector.Notify((New-GrowlNotification -ApplicationName "Test Application
 #-SearchBase "OU=Application,OU=User Role Groups,OU=Security Groups,DC=sec,DC=sos,DC=state,DC=nm,DC=us" `
 #-Port 636 `
 #-Attributes "samaccountname","memberof" `
-Get-ADLDAPGroupMember -Identity "S-1-5-21-4015811867-4186938304-2392806155-2408" `
+<#Get-ADLDAPGroupMember -Identity "S-1-5-21-4015811867-4186938304-2392806155-2408" `
                       -SearchBase "OU=Staff,OU=Personnel,DC=sec,DC=sos,DC=state,DC=nm,DC=us" `
                       -Attributes "samaccountname","memberof" `
                       -Server "sosdc1.sec.sos.state.nm.us" `
                       -Secure `
-                      -Recursive
+                      -Recursive#>
+
+
+$template = @"
+  Alert: {{title}}
+  This is sample text, priority {{priority}}
+  {{@table {{source_user}} has kicked {{target_user}}!
+     {{source_user}} needs his ass kicked}}
+"@
+$tokens = @{
+  title = "People are getting kicked!";
+  priority = "High";
+  table = @(
+    @{source_user = "Matt"; target_user = "Sam"}, @{source_user = "Mark"; target_user = "Tim"}
+  );
+}
+Merge-Tokens -template $template -tokens $tokens
