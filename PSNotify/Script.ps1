@@ -156,7 +156,7 @@ function Script:Write-EmbeddedResource {
   }
 }
 
-# 2do: formalize this function
+# 2do: formalize this function. For example, it needs a lot of error handling...
 function Decompress-GZipItem{
   Param(
     $Infile,
@@ -580,10 +580,10 @@ Pass template to function via pipeline.
     param (
         [Parameter(Mandatory=$True, ValueFromPipeline=$true)]
         [AllowEmptyString()]
-        [String] $template,
+        [String] $Template,
 
         [Parameter(Mandatory=$true)]
-        [HashTable] $tokens
+        [HashTable] $Tokens
     ) 
 
     begin {
@@ -615,82 +615,79 @@ Pass template to function via pipeline.
     }
 
     process {
-        Write-Verbose "$($MyInvocation.MyCommand.Name)::Process" 
+      Write-Verbose "$($MyInvocation.MyCommand.Name)::Process" 
 
-        # adapted based on this Stackoverflow answer: http://stackoverflow.com/a/29041580/134367
-        try {
-            <# (((?<Open>\{{2})([^}{]|(?<![}{])[}{](?![}{]))*)+((?<Close-Open>\}{2})(?(Open)([^}{]|(?<![}{])[}{](?![}{])))*)+)+(?(Open)(?!))
-            [regex]::Replace( $template, '{{(?<tokenName>[\w\.]+)}}', {
-              # {{TOKEN}}
-              param($match)
+      # adapted based on this Stackoverflow answer: http://stackoverflow.com/a/29041580/134367
+      <#
+      [regex]::Replace( $template, '{{(?<tokenName>[\w\.]+)}}', {
+        # {{TOKEN}}
+        param($match)
 
-              $tokenName = $match.Groups['tokenName'].Value
-              Write-Debug $tokenName
+        $tokenName = $match.Groups['tokenName'].Value
+        Write-Debug $tokenName
               
-              $tokenValue = Invoke-Expression "`$tokens.$tokenName"
-              Write-Debug $tokenValue
+        $tokenValue = Invoke-Expression "`$tokens.$tokenName"
+        Write-Debug $tokenValue
 
-              if ($tokenValue) {
-                # there was a value; return it
-                return $tokenValue
-              } 
-              else {
-                # non-matching token; return token
-                return $match
-              }
-            })
-            #>
-
-            [regex]::Replace( $template, "(((?<Open>\{{2})([^}{]|(?<![}{])[}{](?![}{]))*)+((?<Close-Open>\}{2})(?(Open)([^}{]|(?<![}{])[}{](?![}{])))*)+)+(?(Open)(?!))", {
-              Param($match)
-
-              $token_name = Script:get_token_name $match.Value
-
-              if (-not $tokens.ContainsKey($token_name)) {
-                # 2do: Handle
-              }
-
-              $token_remainder = Script:unwrap_token $match.Value
-
-              $tokens[$token_name] | % {
-                $token_value = $_
-                $replacement_string = ""
-                
-                # If we're looking at a recurring pattern, recurse
-                if (Script:is_iterable_token $match.Value) {
-                  $token_value | % {
-                    # Validate the input type - the only valid input is a hashtable
-                    if (-not ($_.GetType() -eq [hashtable])) {
-                      # It might be more useful to receive a message with unmatched tokens, instead of no message at all
-                      #throw [System.ArgumentException] "The provided input for $token_name should be a hashtable, but is of type $($_.GetType().Name)"
-                      # 2do: log
-                      return $match.Value
-                    }
-
-                    Merge-Tokens -tokens $_ -template $token_remainder 
-                  } | % { $replacement_string += $_ }
-                
-                # Otherwise...
-                } else {
-                  $token_value | % { 
-                    # Should be a single-valued object (not an array or a collection)
-                    if ($_.GetType().FullName -Match "collection|\[\]") {}
-                    $replacement_string += ($_ + $token_remainder) 
-                  }
-                }
-              }
-
-              #Get token name
-              Write-Host (Script:get_token_name $match.Value)
-
-            })
-
-
+        if ($tokenValue) {
+          # there was a value; return it
+          return $tokenValue
+        } 
+        else {
+          # non-matching token; return token
+          return $match
         }
-        catch {
-            Write-Error $_
+      })
+      #>
+
+      [regex]::Replace( $template, "(((?<Open>\{{2})([^}{]|(?<![}{])[}{](?![}{]))*)+((?<Close-Open>\}{2})(?(Open)([^}{]|(?<![}{])[}{](?![}{])))*)+)+(?(Open)(?!))", {
+        Param($match)
+
+        $token_name = Script:get_token_name $match.Value
+
+        if (-not $Tokens.ContainsKey($token_name)) {
+          # Token doesn't exist in the provided hashtable of tokens. Return the original token
+          return $match.Value
         }
 
+        $replacement_string = ""
+        $token_remainder = Script:unwrap_token $match.Value
+
+        $Tokens[$token_name] | % {
+          $token_value = $_
+                
+          # If we're looking at a recurring pattern, recurse
+          if (Script:is_iterable_token $match.Value) {
+            $token_value | % {
+              # Validate the input type - the only valid input is a hashtable
+              if (-not ($_.GetType() -eq [hashtable])) {
+                # It might be more useful to receive a message with unmatched tokens, instead of no message at all
+                #throw [System.ArgumentException] "The provided input for $token_name should be a hashtable, but is of type $($_.GetType().Name)"
+                # 2do: log
+                return $match.Value
+              }
+
+              # Recurse by calling self
+              Merge-Tokens -tokens $_ -template $token_remainder 
+            } | % { $replacement_string += $_ }
+                
+          # If the pattern we're looking is not recurring...
+          } else {
+            $token_value | % { 
+              # Should be a single-valued object (not an array or a collection)
+              if ($_.GetType().FullName -Match "collection|array|\[\]") {
+                # Here again, it might be more useful to receive a message with unmatched tokens, instead of no message at all
+                # 2do: log
+                return $match.Value
+              }
+
+              $replacement_string += ($_ + $token_remainder) 
+            }
+          }
+        }
+
+        return $replacement_string
+      })
     }
 
     end { Write-Verbose "$($MyInvocation.MyCommand.Name)::End" }
@@ -993,7 +990,7 @@ function Process-SplunkAlert {
       }
     }
     
-    # Get the raw output of the alert issued by Splunk and decompress it
+    # Get the raw output of the alert issued by Splunk in the form of a gziped CSV, decompress it, save to archive location, import into memory
     if (Test-Path $splunk.results_gzip -PathType Leaf -Include *.gz) {
       $results_file = ($env:TEMP + ($splunk.results_gzip -ireplace "\.gz",""))
       Decompress-GZipItem -Infile $splunk.results_gzip -Outfile $decompressed_results
@@ -1002,9 +999,12 @@ function Process-SplunkAlert {
 
     # Build the Growl Message
     # Start by attempting to load a message template
-    $template_file_name = [RegEx]::Replace($splunk.alert_name, '[\\~#%&*{}/:<>?|\"-]', "_")
+    # Replace characters in the alert name illegal in the file system with '_'
+    $template_file_name = [RegEx]::Replace($splunk.alert_name, '[\\~#%&*{}/:<>?|\"-]', "_") # 2do: check to see if '-' is a legal character
+    # Replace spans of more than a single whitespace character in the alert name with a single whitespace character
     $template_file_name = [RegEx]::Replace($template_file_name, '\s+', " ")
-    $template_file = (Get-ChildItem -Path ".\",".\templates" -Filter "$template_file_name.*")
+    # Attempt to load a file using the reconfigured string, $template_file_name
+    $template_file = (Get-ChildItem -Path ".\",".\templates" -Filter "$template_file_name*.*")
     
     
     if ($template_file.Count -gt 0) {
@@ -1016,9 +1016,19 @@ function Process-SplunkAlert {
         # If we're unable to get the contents of the template file, revert to the default template
         # 2do: create a default template...
       }
+    } else {
+      # 2do: create a default template...
     }
 
-    $growl_title = $splunk.alert_name
+    # Build a hashtable of tokens for the message template
+    $alert_name_match_parts = [RegEx]::Matches($Splunk.alert_name, "^(?<title>[^(]+)[(](?<priority>\w+)[)]$") # Arg, smart indenting in VS... )
+    # PS Microsoft.PowerShell.Core\FileSystem::\\monolith\Users\MatthewF\Documents> $re = $my_csv[0..1] | %{ $t = @{}; $_.PSOb
+    # ject.Properties | %{ $t[$_.Name] = $_.Value } }
+    $splunk_message = @{
+      title = $alert_name_match_parts.Groups['title'].Value;
+      priority = $alert_name_match_parts.Groups['priority'].Value;
+      count = $results.Count
+    }
     #$growl_message = 
 
   }
@@ -1276,13 +1286,14 @@ $test_connector.Notify((New-GrowlNotification -ApplicationName "Test Application
 $template = @"
   Alert: {{title}}
   This is sample text, priority {{priority}}
-  {{@table {{source_user}} has kicked {{target_user}}!
-     {{source_user}} needs his ass kicked}}
+  {{@who_kicked_who {{source_user}} has kicked {{target_user}}!
+     {{source_user}} needs his ass kicked
+  }}
 "@
 $tokens = @{
   title = "People are getting kicked!";
   priority = "High";
-  table = @(
+  who_kicked_who = @(
     @{source_user = "Matt"; target_user = "Sam"}, @{source_user = "Mark"; target_user = "Tim"}
   );
 }
