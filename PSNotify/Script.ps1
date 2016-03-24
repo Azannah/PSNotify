@@ -640,14 +640,16 @@ Pass template to function via pipeline.
       })
       #>
 
+      # 2do: this breaks if tokens aren't seperated by white space (e.g. {{test}}{{test2}} doesn't work)
       [regex]::Replace( $template, "(((?<Open>\{{2})([^}{]|(?<![}{])[}{](?![}{]))*)+((?<Close-Open>\}{2})(?(Open)([^}{]|(?<![}{])[}{](?![}{])))*)+)+(?(Open)(?!))", {
         Param($match)
 
         $token_name = Script:get_token_name $match.Value
 
         if (-not $Tokens.ContainsKey($token_name)) {
-          # Token doesn't exist in the provided hashtable of tokens. Return the original token
-          return $match.Value
+          # Token doesn't exist in the provided hashtable of tokens. Return an empty string
+          #return $match.Value
+          return ""
         }
 
         $replacement_string = ""
@@ -692,6 +694,112 @@ Pass template to function via pipeline.
 
     end { Write-Verbose "$($MyInvocation.MyCommand.Name)::End" }
 
+}
+
+function New-Notification {
+  [CmdletBinding(DefaultParameterSetName='SearchTemplate')]
+  Param(
+    [Parameter(
+      #HelpMessage="",
+      Mandatory=$false,
+      #ParameterSetName="",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [string[]]
+    # A string indicating the application to which a notification is relavant (Splunk, My Folder Monitor, etc.)
+    $TemplateSearchPath = @(".\", ".\templates"),
+    [Parameter(
+      #HelpMessage="",
+      Mandatory=$false,
+      ParameterSetName="SearchTemplate",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [string]
+    # A string indicating the application to which a notification is relavant (Splunk, My Folder Monitor, etc.)
+    $TemplateFilter = "*default*",
+    [Parameter(
+      #HelpMessage="",
+      Mandatory=$false,
+      ParameterSetName="SearchTemplate",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [hashtable]
+    # A string indicating the application to which a notification is relavant (Splunk, My Folder Monitor, etc.)
+    $TemplateMappingFunction = @{ default = { -not $PSItem } },
+    [Parameter(
+      #HelpMessage="",
+      Mandatory=$true,
+      ParameterSetName="ExplicitTemplate",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [hashtable]
+    # A string indicating the application to which a notification is relavant (Splunk, My Folder Monitor, etc.)
+    $TemplatesMap,
+    [Parameter(
+      #HelpMessage="",
+      Mandatory=$true,
+      #ParameterSetName="",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    [hashtable]
+    # A string indicating the application to which a notification is relavant (Splunk, My Folder Monitor, etc.)
+    $TokenValues
+  )
+
+  Begin {
+    $Script:extension_map = @{ html = @("htm", "html"); text = @("txt","text") }
+
+    function Script:get_templates() {
+      $filtered_templates = $TemplateSearchPath | ?{
+        Test-Path $_
+      } | Get-ChildItem -Filter $TemplateFilter -Recurse -File
+
+      $filtered_templates | % {
+        $extension = $_.Extension
+        $extension_map.Keys | ? {
+          $extension -in $extension_map[$_]
+        } | % { $_; break; }
+      }
+    }
+  }
+
+  Process {
+    $notification = New-Module {
+      Param(
+        [hashtable]$tokens,
+        [hashtable]$template_map
+      )
+
+      function GetText {
+        Param(
+          [ValidateSet("Brief", "Standard", "Detailed", "Default")]
+          [string]$Format
+        )
+      }
+
+      function GetHTML {
+        Param(
+          [ValidateSet("Brief", "Standard", "Detailed", "Default")]
+          [string]$Format
+        )
+      }
+      Export-ModuleMember -Function "Notify", "AddCallbackHandler"
+    } -AsCustomObject -ArgumentList $TokenValues
+  }
+
+  End {
+
+  }
 }
 
 function New-GrowlNotification {
@@ -971,6 +1079,25 @@ function Process-SplunkAlert {
     $Splunk = $null
   )
 
+  Begin {
+
+    # 2do: convert this to a module function called Import-CSVHashtable
+    function Script:csv_import_to_hashtable {
+      Param([Parameter(ValueFromPipeline=$true)]$object)
+
+      Process {
+        return ($object | % {
+          $hash_array = @{};
+          $_.PSObject.Properties | % {
+            $hash_array[$_.Name] = $_.Value
+          }
+          $hash_array
+        })
+      }
+    }
+
+  }
+
   Process {
     if (($Splunk -eq $null) -and (-not (Test-Path Env:\SPLUNK_ARG_0))) {
       throw [System.ArgumentNullException] "Splunk alert action environment variables not availabe - probably running with the wrong context"
@@ -991,26 +1118,29 @@ function Process-SplunkAlert {
     }
     
     # Get the raw output of the alert issued by Splunk in the form of a gziped CSV, decompress it, save to archive location, import into memory
-    if (Test-Path $splunk.results_gzip -PathType Leaf -Include *.gz) {
-      $results_file = ($env:TEMP + ($splunk.results_gzip -ireplace "\.gz",""))
-      Decompress-GZipItem -Infile $splunk.results_gzip -Outfile $decompressed_results
-      $results = Import-Csv -Path $results_file
+    if (Test-Path $Splunk.results_gzip -PathType Leaf -Include *.gz) {
+      $results_file = ($env:TEMP + "\" + ($Splunk.results_gzip.split("\")[-1] -ireplace "\.gz",""))
+      Decompress-GZipItem -Infile $splunk.results_gzip -Outfile $results_file
+      # Make sure we end up with an array, even if there's only one result
+      $results = @(Import-Csv -Path $results_file | csv_import_to_hashtable)
     }
+
+    # 2do: add $results_file to $AlertRepository
 
     # Build the Growl Message
     # Start by attempting to load a message template
     # Replace characters in the alert name illegal in the file system with '_'
-    $template_file_name = [RegEx]::Replace($splunk.alert_name, '[\\~#%&*{}/:<>?|\"-]', "_") # 2do: check to see if '-' is a legal character
+    $template_file_name = [RegEx]::Replace($Splunk.alert_name, '[\\~#%&*{}/:<>?|\"-]', "_") # 2do: check to see if '-' is a legal character
     # Replace spans of more than a single whitespace character in the alert name with a single whitespace character
     $template_file_name = [RegEx]::Replace($template_file_name, '\s+', " ")
     # Attempt to load a file using the reconfigured string, $template_file_name
     $template_file = (Get-ChildItem -Path ".\",".\templates" -Filter "$template_file_name*.*")
     
-    
-    if ($template_file.Count -gt 0) {
+    # The result of Get-ChildItem will be $null, a single FileSystemInfo object, or an array. Either way, we want a count, so wrap array @()
+    if (@($template_file).Count -gt 0) {
       try {
         # If multiple templates matches exist, only use the first
-        $message_template = Get-Content -Path $template_file[0].FullName -ErrorAction Stop
+        $message_template = Get-Content -Path $template_file[0].FullName -ErrorAction Stop | Out-String
       } catch {
         # Log
         # If we're unable to get the contents of the template file, revert to the default template
@@ -1021,16 +1151,25 @@ function Process-SplunkAlert {
     }
 
     # Build a hashtable of tokens for the message template
-    $alert_name_match_parts = [RegEx]::Matches($Splunk.alert_name, "^(?<title>[^(]+)[(](?<priority>\w+)[)]$") # Arg, smart indenting in VS... )
+    $alert_name_match_parts = [RegEx]::Match($Splunk.alert_name, "^(?<title>[^(]+)([(](?<priority>\w+)[)])?$") # Arg, smart indenting in VS... )
     # PS Microsoft.PowerShell.Core\FileSystem::\\monolith\Users\MatthewF\Documents> $re = $my_csv[0..1] | %{ $t = @{}; $_.PSOb
     # ject.Properties | %{ $t[$_.Name] = $_.Value } }
     $splunk_message = @{
       title = $alert_name_match_parts.Groups['title'].Value;
       priority = $alert_name_match_parts.Groups['priority'].Value;
-      count = $results.Count
+      count = $results.Count; # We want to make sure we're counting sets, not key/value pairs in a hashtable
+      membership_change = $results[0..([Math]::Min(1, $results.Count - 1))]; # return at most 2, [0..1]
+      raw_report = "C:\Not yet working\whatever.csv";
     }
-    #$growl_message = 
 
+    # We want to make sure we're counting sets, not key/value pairs in a hashtable
+    if ($results.Count -gt 2) {
+      $splunk_message['ellipsis'] = @{ more_count = ($results.Count - 2)}
+    }
+
+    return $splunk_message
+
+    #$merged_message = Merge-Tokens -Template $message_template -Tokens $splunk_message
   }
 }
 
@@ -1282,7 +1421,7 @@ $test_connector.Notify((New-GrowlNotification -ApplicationName "Test Application
                       -Secure `
                       -Recursive#>
 
-
+<#
 $template = @"
   Alert: {{title}}
   This is sample text, priority {{priority}}
@@ -1298,3 +1437,17 @@ $tokens = @{
   );
 }
 Merge-Tokens -template $template -tokens $tokens
+#>
+$fake_splunk_alert = @{
+  script_name = "C:\Scripts\Splunk_Alert.bat";
+  event_count = 3;
+  search_terms = "index=`"wineventlog`" eventtype=... | table ... | more ...";
+  query_string = "index=`"wineventlog`" eventtype=... | table ... | more ...";
+  alert_name = "Group membership changed (High)";
+  trigger_reason = "Something cryptic and useless for now";
+  report_url = "https://splunk:442/app/,,,,,,,";
+  #not_used = (get-item Env:\SPLUNK_ARG_7).Value;
+  results_gzip = "D:\Temp\tmp_0.csv.gz";
+}
+
+Process-SplunkAlert -Splunk $fake_splunk_alert

@@ -1,0 +1,7 @@
+{{title}}
+Alert Level: {{priority}}, Event Count: {{count}}
+
+{{membership_change {{src_user}} {{action}} {{user}} to the {{group_name}} group
+}} {{ellipsis 
+...and {{more_count}} more group changes}}
+Full details available at {{raw_report}}
