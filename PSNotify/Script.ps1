@@ -729,9 +729,47 @@ function New-Notification {
       ValueFromPipeline=$false,
       ValueFromPipelineByPropertyName=$true,
       ValueFromRemainingArguments=$false)]
+    [scriptblock]
+    <#
+      A ForEach-Object compatible scriptblock that, given a PowerShell [FileInfo] object, returns a
+      string representing a variant identifier.
+      
+    
+      @{ variant = [scriptblock]$filter_script; ... }
+      variant := A descriptor identifying a variant of the notification. Can by anything, but must define
+                 at least one of the following 'brief', 'standard', 'detailed', 'default'. If only one
+                 variant is defined, it becomes the de-facto default.
+
+      $filter_script := A ForEach-Object scriptblock used to sort discovered templates by returning the
+                        variant identifier as a string. Objects passed as Powershell [FileInfo] objects.
+    #>
+    #$VariantMappingFunction = @{ default = { -not $PSItem } },
+    $VariantMappingFunction = { $_ -match "^.+_(?<variant>\w+)\.\w+$" | Out-Null; return $Matches['variant']; },
+    [Parameter(
+      #HelpMessage="",
+      Mandatory=$false,
+      ParameterSetName="SearchTemplate",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
     [hashtable]
-    # A string indicating the application to which a notification is relavant (Splunk, My Folder Monitor, etc.)
-    $TemplateMappingFunction = @{ default = { -not $PSItem } },
+    <#
+      @{ variant = [scriptblock]$filter_script; ... }
+      variant := A descriptor identifying a variant of the notification. Can by anything, but must define
+                 at least one of the following 'brief', 'standard', 'detailed', 'default'. If only one
+                 variant is defined, it becomes the de-facto default.
+
+      $filter_script := A scriptblock used with where-object to filter discovered templates and sort them
+                        by variant.
+    #>
+    $FormatMappingFunction = {
+      $_ -match "^.+\.(?<extension>\w+)$" | Out-Null; 
+      switch ($Matches['extension']) {
+        {$_ -in "htm","html"} { return "html" }
+        {$_ -in "txt","text"} { return "text" }
+      }
+    },
     [Parameter(
       #HelpMessage="",
       Mandatory=$true,
@@ -741,7 +779,12 @@ function New-Notification {
       ValueFromPipelineByPropertyName=$true,
       ValueFromRemainingArguments=$false)]
     [hashtable]
-    # A string indicating the application to which a notification is relavant (Splunk, My Folder Monitor, etc.)
+    <# 
+      @{ variant = [FileInfo]$file_object | [string]$file_path; ... }
+      variant := A descriptor identifying a variant of the notification. Can by anything, but must define
+                 at least one of the following 'brief', 'standard', 'detailed', 'default'. If only one
+                 variant is defined, it becomes the de-facto default.
+    #>
     $TemplatesMap,
     [Parameter(
       #HelpMessage="",
@@ -759,17 +802,51 @@ function New-Notification {
   Begin {
     $Script:extension_map = @{ html = @("htm", "html"); text = @("txt","text") }
 
-    function Script:get_templates() {
-      $filtered_templates = $TemplateSearchPath | ?{
+    function Script:get_template_map {
+      if ($PSCmdlet.ParameterSetName -eq "SearchTemplate") {
+        return Script:get_template_map_search
+      }
+
+      return Script:get_template_map_explicit
+    }
+
+    function Script:get_template_map_explicit {
+      $template_map = @{};
+
+      $TemplatesMap
+    }
+
+    function Script:get_template_map_search {
+      $template_map = @{};
+      
+      $templates = $TemplateSearchPath | ?{
         Test-Path $_
       } | Get-ChildItem -Filter $TemplateFilter -Recurse -File
 
-      $filtered_templates | % {
-        $extension = $_.Extension
-        $extension_map.Keys | ? {
-          $extension -in $extension_map[$_]
+      $templates | % {
+        $file_extension = $_.Extension
+        $file_name = $_.Name
+        
+        $template_format = $Script:extension_map.Keys | ? {
+          $file_extension -in $Script:extension_map[$_]
         } | % { $_; break; }
+
+        $template_variant = $VariantMappingFunction.Keys | % {
+          $file_name | Where-Object -FilterScript $VariantMappingFunction[$_] | % { $_ }
+        }
+
+        if (-not $template_map.ContainsKey($template_format)) {
+          $template_map[$template_format] = @{};
+        }
+
+        $template_map[$template_format][$template_variant] = $_
       }
+
+      return $template_map
+    }
+
+    function Script:read_template_file {
+
     }
   }
 
