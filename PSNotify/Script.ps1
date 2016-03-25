@@ -731,20 +731,28 @@ function New-Notification {
       ValueFromRemainingArguments=$false)]
     [scriptblock]
     <#
-      A ForEach-Object compatible scriptblock that, given a PowerShell [FileInfo] object, returns a
-      string representing a variant identifier.
+      A ForEach-Object compatible [scriptblock] that, given a PowerShell [FileInfo] object, returns a
+      [string] identifier representing a variant.
       
-    
-      @{ variant = [scriptblock]$filter_script; ... }
-      variant := A descriptor identifying a variant of the notification. Can by anything, but must define
-                 at least one of the following 'brief', 'standard', 'detailed', 'default'. If only one
-                 variant is defined, it becomes the de-facto default.
+      Example:
+      -VariantMappingFunction = {
+        $_ -match "^.+_(?<variant>\w+)\.\w+$" | Out-Null; 
+        if ([string]::IsNullOrEmpty($Matches['variant'])) { return 'default' } else { return $Matches['variant'] }  ;
+      }
 
-      $filter_script := A ForEach-Object scriptblock used to sort discovered templates by returning the
-                        variant identifier as a string. Objects passed as Powershell [FileInfo] objects.
+      The default variant mapping function looks for template files in the following format:
+
+      file name part_variant.extension, where variant is case insensitive
+
+      Note: If no defaults are defined for 'variant' and 'format', the first of each identifier encountered, or the last template
+      discovered will become the de-facto 'default'. If no templates are discovered, default templates are used. Default 
+      templates are 'text' formatted and have 'brief', 'standard', and 'detailed' variants.
     #>
     #$VariantMappingFunction = @{ default = { -not $PSItem } },
-    $VariantMappingFunction = { $_ -match "^.+_(?<variant>\w+)\.\w+$" | Out-Null; return $Matches['variant']; },
+    $VariantMappingFunction = {
+      $_ -match "^.+_(?<variant>\w+)\.\w+$" | Out-Null; 
+      if ([string]::IsNullOrEmpty($Matches['variant'])) { return 'default' } else { return $Matches['variant'] }  ;
+    },
     [Parameter(
       #HelpMessage="",
       Mandatory=$false,
@@ -753,7 +761,7 @@ function New-Notification {
       ValueFromPipeline=$false,
       ValueFromPipelineByPropertyName=$true,
       ValueFromRemainingArguments=$false)]
-    [hashtable]
+    [scriptblock]
     <#
       @{ variant = [scriptblock]$filter_script; ... }
       variant := A descriptor identifying a variant of the notification. Can by anything, but must define
@@ -766,8 +774,9 @@ function New-Notification {
     $FormatMappingFunction = {
       $_ -match "^.+\.(?<extension>\w+)$" | Out-Null; 
       switch ($Matches['extension']) {
-        {$_ -in "htm","html"} { return "html" }
-        {$_ -in "txt","text"} { return "text" }
+        {$_ -in "htm","html"} { return 'html' }
+        {$_ -in "txt","text"} { return 'text' }
+        default { return 'default' }
       }
     },
     [Parameter(
@@ -778,14 +787,41 @@ function New-Notification {
       ValueFromPipeline=$false,
       ValueFromPipelineByPropertyName=$true,
       ValueFromRemainingArguments=$false)]
-    [hashtable]
+    [hashtable[]]
     <# 
+      An array of hashtables defining 'variant', 'format', 'template'. For example:
+      
+      @(
+        @{
+          variant = 'brief'; format = 'text';
+          template = "C:\templates\this is a template.txt"
+        },
+        @{
+          variant = 'default'; format = 'text';
+          template = $file_info_object
+        },
+        @{
+          variant = 'default'; format = 'text';
+          template = "{{title}}`n{{application}} has issued a {{priority}} priority alert!"
+        }
+      )
+
+      variant := [string]$variant_identifier
+      
+      format := [string]$format_identifier
+
+      template := [FileInfo]$file_object | [string]$file_path | [string]$template_string
+
+      Note: If no defaults are defined for 'variant' and 'format', the first of each identifier encountered will become the
+      de-facto 'default'. If no templates are defined, default templates are used. Default templates are 'text' formatted
+      and have 'brief', 'standard', and 'detailed' variants.
+
       @{ variant = [FileInfo]$file_object | [string]$file_path; ... }
       variant := A descriptor identifying a variant of the notification. Can by anything, but must define
                  at least one of the following 'brief', 'standard', 'detailed', 'default'. If only one
                  variant is defined, it becomes the de-facto default.
     #>
-    $TemplatesMap,
+    $TemplateMap,
     [Parameter(
       #HelpMessage="",
       Mandatory=$true,
@@ -811,9 +847,15 @@ function New-Notification {
     }
 
     function Script:get_template_map_explicit {
-      $template_map = @{};
+      $template_map = @{}
 
-      $TemplatesMap
+      $TemplateMap | % {
+        if (-not $template_map.ContainsKey($_['variant'])) {
+          $template_map[$_['variant']] = @{}
+        }
+
+        $template_map[$_['variant']][$_['format']] = $_['template']
+      }
     }
 
     function Script:get_template_map_search {
