@@ -854,6 +854,8 @@ function New-Notification {
           $template_map[$_['variant']] = @{}
         }
 
+        # 2do: handle (Test-Path $_['template']) -eq $false
+
         $template_map[$_['variant']][$_['format']] = $_['template']
       }
     }
@@ -861,9 +863,11 @@ function New-Notification {
     function Script:get_template_map_search {
       $template_map = @{};
       
-      $templates = $TemplateSearchPath | ?{
+      $templates = $TemplateSearchPath | ? {
         Test-Path $_
       } | Get-ChildItem -Filter $TemplateFilter -Recurse -File
+
+      # 2do: handle $templates -eq $null
 
       $templates | % {
         $file_extension = $_.Extension
