@@ -153,6 +153,9 @@ function Script:Write-EmbeddedResource {
         throw $_
       }
     }
+
+    # 2do: Make sure "throw" halts the script so this doesn't get executed if Set-Content fails.
+    return (Get-ChildItem $Name)
   }
 }
 
@@ -445,6 +448,112 @@ function Get-ADLDAPGroupMember {
 
 }
 
+function Get-EmailConnector {
+# Perhaps eventually it would be best to use more general SMTP client classes https://msdn.microsoft.com/en-us/library/x5x13z6h(v=vs.110).aspx?cs-save-lang=1&cs-lang=csharp#code-snippet-1
+  [CmdletBinding()]
+  Param(
+    [Parameter(
+      #HelpMessage="Specify the name of a computer to send messages to a remote system",
+      Mandatory=$true,
+      #ParameterSetName="remote",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    #[Alias('Target')]
+    [string]
+    # The name of the SMTP server that will proxy email notification
+    $SmtpServer,
+    [Parameter(
+      #HelpMessage="Specify the name of a computer to send messages to a remote system",
+      Mandatory=$false,
+      #ParameterSetName="remote",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    #[Alias('Target')]
+    [switch]
+    # Specify if the SMTP connection should be secured using SSL
+    $UseSsl,
+    [Parameter(
+      #HelpMessage="Specify the name of a computer to send messages to a remote system",
+      Mandatory=$true,
+      #ParameterSetName="remote",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    #[Alias('Target')]
+    [pscredential]
+    # The name of the SMTP server that will proxy email notification
+    $Credential
+  )
+
+  Begin {
+
+  }
+
+  Process {
+    return New-Module {
+      Param(
+        [string]$SmtpServer,
+        [switch]$UseSsl, 
+        [pscredential]$Credential
+      )
+
+      function Send {
+        Param(
+          [psobject]$email_notification,
+          [string[]]$recipient
+        )
+
+        $recipient_list = $recipient | % {
+          try {
+            return [System.Net.Mail.MailAddress] $_
+          } catch {
+            # 2do: Log
+            Out-Null
+          }
+        }
+
+        $recipient_list | % {
+          if ($email_notification.Attachments -eq $null) {
+            Send-MailMessage -To $_.ToString() `
+                             -From $email_notification.Originator.ToString() `
+                             -Subject $email_notification.Subject `
+                             -Body $email_notification.Message `
+                             -Priority $email_notification.Priority `
+                             -Encoding $email_notification.Encoding `
+                             -BodyAsHtml:$email_notification.MessageAsHtml `
+                             -SmtpServer $SmtpServer `
+                             -UseSsl:$UseSsl `
+                             -Credential $Credential
+          } else {
+            Send-MailMessage -To $_.ToString() `
+                             -From $email_notification.Originator.ToString() `
+                             -Subject $email_notification.Subject `
+                             -Body $email_notification.Message `
+                             -Attachments $email_notification.Attachments `
+                             -Priority $email_notification.Priority `
+                             -Encoding $email_notification.Encoding `
+                             -BodyAsHtml:$email_notification.MessageAsHtml `
+                             -SmtpServer $SmtpServer `
+                             -UseSsl:$UseSsl `
+                             -Credential $Credential
+          }
+        }
+      }
+
+      Export-ModuleMember -Function "Send"
+    } -AsCustomObject -ArgumentList $SmtpServer, $UseSsl, $Credential
+  }
+
+  End {
+
+  }
+}
+
 function Get-GrowlConnector {
   [CmdletBinding(DefaultParameterSetName="local")]
   Param(
@@ -709,7 +818,7 @@ function New-Notification {
       ValueFromRemainingArguments=$false)]
     [string[]]
     # A string indicating the application to which a notification is relavant (Splunk, My Folder Monitor, etc.)
-    $TemplateSearchPath = @(".\", ".\templates"),
+    $TemplateSearchPath = @("$($MyInvocation.PSScriptRoot)\templates", "$($MyInvocation.PSScriptRoot)"),
     [Parameter(
       #HelpMessage="",
       Mandatory=$false,
@@ -750,7 +859,7 @@ function New-Notification {
     #>
     #$VariantMappingFunction = @{ default = { -not $PSItem } },
     $VariantMappingFunction = {
-      $_ -match "^.+_(?<variant>\w+)\.\w+$" | Out-Null; 
+      $_.Name -match "^.+_(?<variant>\w+)\.\w+$" | Out-Null; 
       if ([string]::IsNullOrEmpty($Matches['variant'])) { return 'default' } else { return $Matches['variant'] }  ;
     },
     [Parameter(
@@ -763,19 +872,14 @@ function New-Notification {
       ValueFromRemainingArguments=$false)]
     [scriptblock]
     <#
-      @{ variant = [scriptblock]$filter_script; ... }
-      variant := A descriptor identifying a variant of the notification. Can by anything, but must define
-                 at least one of the following 'brief', 'standard', 'detailed', 'default'. If only one
-                 variant is defined, it becomes the de-facto default.
 
-      $filter_script := A scriptblock used with where-object to filter discovered templates and sort them
-                        by variant.
     #>
     $FormatMappingFunction = {
-      $_ -match "^.+\.(?<extension>\w+)$" | Out-Null; 
-      switch ($Matches['extension']) {
-        {$_ -in "htm","html"} { return 'html' }
-        {$_ -in "txt","text"} { return 'text' }
+      #$_ -match "^.+\.(?<extension>\w+)$" | Out-Null; 
+      #switch ($Matches['extension']) {
+      switch ($_.Extension) {
+        {$_ -in ".htm",".html"} { return 'html' }
+        {$_ -in ".txt",".text"} { return 'text' }
         default { return 'default' }
       }
     },
@@ -836,7 +940,7 @@ function New-Notification {
   )
 
   Begin {
-    $Script:extension_map = @{ html = @("htm", "html"); text = @("txt","text") }
+    #$Script:extension_map = @{ html = @("htm", "html"); text = @("txt","text") }
 
     function Script:get_template_map {
       if ($PSCmdlet.ParameterSetName -eq "SearchTemplate") {
@@ -850,13 +954,18 @@ function New-Notification {
       $template_map = @{}
 
       $TemplateMap | % {
+        #2do: handle invalid inputs, such as no 'variant' key in hashtable
+        #2do: handle template strings
+
         if (-not $template_map.ContainsKey($_['variant'])) {
           $template_map[$_['variant']] = @{}
         }
 
-        # 2do: handle (Test-Path $_['template']) -eq $false
-
-        $template_map[$_['variant']][$_['format']] = $_['template']
+        if (Test-Path $_['template']) {
+          $template_map[$_['variant']][$_['format']] = Get-Item $_['template']
+        } else {
+          # 2do: log and skip
+        }
       }
     }
 
@@ -870,30 +979,36 @@ function New-Notification {
       # 2do: handle $templates -eq $null
 
       $templates | % {
-        $file_extension = $_.Extension
-        $file_name = $_.Name
+        #$file_extension = $_.Extension
+        #$file_name = $_.Name
+
+        $template_variant = $_ | % $VariantMappingFunction
         
-        $template_format = $Script:extension_map.Keys | ? {
-          $file_extension -in $Script:extension_map[$_]
-        } | % { $_; break; }
+        $template_format = $_ | % $FormatMappingFunction
 
-        $template_variant = $VariantMappingFunction.Keys | % {
-          $file_name | Where-Object -FilterScript $VariantMappingFunction[$_] | % { $_ }
+
+        if (-not $template_map.ContainsKey($template_variant)) {
+          $template_map[$template_variant] = @{};
         }
 
-        if (-not $template_map.ContainsKey($template_format)) {
-          $template_map[$template_format] = @{};
-        }
-
-        $template_map[$template_format][$template_variant] = $_
+        $template_map[$template_variant][$template_format] = $_
       }
 
       return $template_map
     }
 
-    function Script:read_template_file {
+    <#function Script:read_file_contents {
+      Param(
+        [string]$file_path
+      )
 
-    }
+      try {
+        return Get-Content -Path $file_path -ErrorAction Stop | Out-String
+      } catch {
+        # 2do: log
+        return = $null
+      }
+    }#>
   }
 
   Process {
@@ -903,7 +1018,50 @@ function New-Notification {
         [hashtable]$template_map
       )
 
-      function GetText {
+      function Script:read_file_contents {
+        Param(
+          [string]$file_path
+        )
+
+        try {
+          return Get-Content -Path $file_path -ErrorAction Stop | Out-String
+        } catch {
+          # 2do: log
+          return = $null
+        }
+      }
+
+      function GetFormats {
+        Param(
+          [string]$variant = $null
+        )
+
+        if ([string]::IsNullOrEmpty($variant)) {
+          return {
+            $template_map.Keys | % { $template_map[$_].Keys } | Sort-Object | Get-Unique
+          }
+        }
+
+        return $template_map[$_].Keys
+      }
+
+      function GetNotification {
+        Param(
+          [string]$variant = "default",
+          [string]$format = "default"
+        )
+
+        # 2do: handle template_maps that return template strings
+
+        $template_string = Script:read_file_contents $template_map[$variant][$format].FullName
+
+        return Merge-Tokens -Template $template_string -Tokens $tokens
+      }
+
+      function GetVariants {
+        return $template_map.Keys
+      }
+      <#function GetText {
         Param(
           [ValidateSet("Brief", "Standard", "Detailed", "Default")]
           [string]$Format
@@ -915,9 +1073,128 @@ function New-Notification {
           [ValidateSet("Brief", "Standard", "Detailed", "Default")]
           [string]$Format
         )
-      }
-      Export-ModuleMember -Function "Notify", "AddCallbackHandler"
-    } -AsCustomObject -ArgumentList $TokenValues
+      }#>
+      Export-ModuleMember -Function "GetNotification" -Variable "tokens"
+    } -AsCustomObject -ArgumentList $TokenValues, (Script:get_template_map)
+
+    return $notification
+  }
+
+  End {
+
+  }
+}
+
+function New-EmailNotification {
+  #[CmdletBinding(DefaultParameterSetName="standard")]
+  [CmdletBinding()]
+  Param(
+    [Parameter(
+      #HelpMessage="Specify the name of the application sending this notification",
+      Mandatory=$true,
+      #ParameterSetName="standard",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    #[Alias('Application','App')]
+    [System.Net.Mail.MailAddress]
+    # The email addresses from which this notification is sent
+    $Originator,
+    [Parameter(
+      #HelpMessage="Specify the name of the application sending this notification",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    #[Alias('Application','App')]
+    [string]
+    # The subject of the email notification
+    $Subject = "",
+    [Parameter(
+      #HelpMessage="Specify the name of the application sending this notification",
+      Mandatory=$true,
+      #ParameterSetName="standard",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    #[Alias('Application','App')]
+    [string]
+    # The message to include as the body of the email notification
+    $Message,
+    [Parameter(
+      #HelpMessage="Specify the name of the application sending this notification",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    #[Alias('Application','App')]
+    [string[]]
+    # An optional array of attachments specified as a [string] path to files
+    $Attachments,
+    [Parameter(
+      #HelpMessage="Specify the name of a computer to send messages to a remote system",
+      Mandatory=$false,
+      #ParameterSetName="remote",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    #[Alias('Target')]
+    [ValidateSet("High", "Normal", "Low")]
+    [string]
+    # Specifies the priority of the e-mail message. The valid values for this are Normal, High, and Low. Normal is the default.
+    $Priority = "Normal",
+    [Parameter(
+      #HelpMessage="Specify the name of a computer to send messages to a remote system",
+      Mandatory=$false,
+      #ParameterSetName="remote",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    #[Alias('Target')]
+    [ValidateSet("ASCII", "UTF8", "UTF7", "UTF32", "Unicode", "BigEndianUnicode", "Default", "OEM")]
+    [string]
+    # Specifies the encoding used for the body and subject. Valid values are ASCII, UTF8, UTF7, UTF32, Unicode, BigEndianUnicode, Default, and OEM. ASCII is the default.
+    $Encoding = "ASCII",
+    [Parameter(
+      #HelpMessage="Specify the name of the application sending this notification",
+      Mandatory=$false,
+      #ParameterSetName="standard",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    #[Alias('Application','App')]
+    [switch]
+    # The email addresses from which this notification is sent
+    $MessageAsHtml
+  )
+
+  Begin {
+
+  }
+
+  Process {
+    return New-Module {
+      Param(
+        [System.Net.Mail.MailAddress]$Originator,
+        [string]$Subject, 
+        [string]$Message, 
+        [string[]]$Attachments,
+        [string]$Priority,
+        [string]$Encoding,
+        [switch]$MessageAsHtml
+      )
+
+      Export-ModuleMember -Variable "Originator", "Subject", "Message", "Attachments", "Priority", "Encoding", "MessageAsHtml"
+    } -AsCustomObject -ArgumentList $Originator, $Subject, $Message, $Attachments, $Priority, $Encoding, $MessageAsHtml
   }
 
   End {
@@ -1185,9 +1462,10 @@ function Process-SplunkAlert {
       ValueFromPipelineByPropertyName=$true,
       ValueFromRemainingArguments=$false)]
     #[Alias('Application','App')]
-    [string[]]
+    [ValidateScript({Test-Path $_})]
+    [string]
     # A location on the network where information related to alerts can be stored
-    $AlertRepository,
+    $AlertRepository, # 2do: 
     [Parameter(
       #HelpMessage="Specify the name of the application sending this notification",
       Mandatory=$false,
@@ -1226,6 +1504,11 @@ function Process-SplunkAlert {
       throw [System.ArgumentNullException] "Splunk alert action environment variables not availabe - probably running with the wrong context"
     }
 
+    # Make sure the AlertRepository doesn't have a trailing "\" character
+    if (-not [string]::IsNullOrWhiteSpace($AlertRepository)) {
+      $AlertRepository = $AlertRepository -replace "\\$", ""
+    }
+
     if ($Splunk -eq $null) {
       $Splunk = @{
         script_name = (get-item Env:\SPLUNK_ARG_0).Value;
@@ -1242,47 +1525,36 @@ function Process-SplunkAlert {
     
     # Get the raw output of the alert issued by Splunk in the form of a gziped CSV, decompress it, save to archive location, import into memory
     if (Test-Path $Splunk.results_gzip -PathType Leaf -Include *.gz) {
+      # Attempt to decompress the results file from Splunk
       $results_file = ($env:TEMP + "\" + ($Splunk.results_gzip.split("\")[-1] -ireplace "\.gz",""))
       Decompress-GZipItem -Infile $splunk.results_gzip -Outfile $results_file
+
       # Make sure we end up with an array, even if there's only one result
       $results = @(Import-Csv -Path $results_file | csv_import_to_hashtable)
     }
 
     # 2do: add $results_file to $AlertRepository
 
-    # Build the Growl Message
-    # Start by attempting to load a message template
-    # Replace characters in the alert name illegal in the file system with '_'
     $template_file_name = [RegEx]::Replace($Splunk.alert_name, '[\\~#%&*{}/:<>?|\"-]', "_") # 2do: check to see if '-' is a legal character
-    # Replace spans of more than a single whitespace character in the alert name with a single whitespace character
-    $template_file_name = [RegEx]::Replace($template_file_name, '\s+', " ")
-    # Attempt to load a file using the reconfigured string, $template_file_name
-    $template_file = (Get-ChildItem -Path ".\",".\templates" -Filter "$template_file_name*.*")
-    
-    # The result of Get-ChildItem will be $null, a single FileSystemInfo object, or an array. Either way, we want a count, so wrap array @()
-    if (@($template_file).Count -gt 0) {
-      try {
-        # If multiple templates matches exist, only use the first
-        $message_template = Get-Content -Path $template_file[0].FullName -ErrorAction Stop | Out-String
-      } catch {
-        # Log
-        # If we're unable to get the contents of the template file, revert to the default template
-        # 2do: create a default template...
-      }
-    } else {
-      # 2do: create a default template...
-    }
 
     # Build a hashtable of tokens for the message template
     $alert_name_match_parts = [RegEx]::Match($Splunk.alert_name, "^(?<title>[^(]+)([(](?<priority>\w+)[)])?$") # Arg, smart indenting in VS... )
-    # PS Microsoft.PowerShell.Core\FileSystem::\\monolith\Users\MatthewF\Documents> $re = $my_csv[0..1] | %{ $t = @{}; $_.PSOb
-    # ject.Properties | %{ $t[$_.Name] = $_.Value } }
+
     $splunk_message = @{
       title = $alert_name_match_parts.Groups['title'].Value;
       priority = $alert_name_match_parts.Groups['priority'].Value;
       count = $results.Count; # We want to make sure we're counting sets, not key/value pairs in a hashtable
       membership_change = $results[0..([Math]::Min(1, $results.Count - 1))]; # return at most 2, [0..1]
-      raw_report = "C:\Not yet working\whatever.csv";
+      raw_report = "...unable to archive raw alert data...";
+    }
+
+    # Attempt to copy the results files to the AlertRepository
+    try {
+      $results_archive_file = $AlertRepository + "\" + (Get-Date -Format "yyyyMMdd-HHmmssfff-") + $template_file_name + (Get-Item $results_file).Extension
+      Copy-Item -Path $results_file -Destination $results_archive_file -Force -ErrorAction Stop
+      $splunk_message['raw_report'] = $results_archive_file
+    } catch {
+      # 2do: Log
     }
 
     # We want to make sure we're counting sets, not key/value pairs in a hashtable
@@ -1290,7 +1562,7 @@ function Process-SplunkAlert {
       $splunk_message['ellipsis'] = @{ more_count = ($results.Count - 2)}
     }
 
-    return $splunk_message
+    return (New-Notification -TemplateFilter "$template_file_name*" -TokenValues $splunk_message)
 
     #$merged_message = Merge-Tokens -Template $message_template -Tokens $splunk_message
   }
@@ -1573,4 +1845,79 @@ $fake_splunk_alert = @{
   results_gzip = "D:\Temp\tmp_0.csv.gz";
 }
 
-Process-SplunkAlert -Splunk $fake_splunk_alert
+Process-SplunkAlert -AlertRepository "\\sosfilesrv2.sec.sos.state.nm.us\it\! Re-Organized IT Share\Records\Alerts" -Splunk $fake_splunk_alert | % {
+
+  $notification = $_
+
+  $growl_notification = New-GrowlNotification -ApplicationName "Splunk" `
+                                 -NotificationType "Change Management" `
+                                 -Title $notification.tokens['title'] `
+                                 -Message $notification.GetNotification("standard","text") `
+                                 -Priority $notification.tokens['priority'] `
+                                 -NotificationID ($notification.tokens['title'] + "_" + $notification.tokens['priority']) `
+                                 -CallbackID ($notification.tokens['title'] + "_" + $notification.tokens['priority']) `
+                                 -Sticky
+
+  $email_notification = New-EmailNotification -Originator "SOS.IT-Notification@state.nm.us" `
+                                              -Subject $notification.tokens['title'] `
+                                              -Message $notification.GetNotification("standard","text") `
+                                              -Attachments $notification.tokens['raw_report'] `
+                                              -Priority High
+
+
+  $txt_notification = New-EmailNotification -Originator "SOS.IT-Notification@state.nm.us" `
+                                            -Subject ("Splunk | " + $notification.tokens['priority']) `
+                                            -Message $notification.GetNotification("brief","text")
+
+  # S-1-5-21-4015811867-4186938304-2392806155-2477 => "Computer Alert"
+  switch ($notification.tokens['priority']) {
+    "Emergency" { }
+    "High" { $groups = "S-1-5-21-4015811867-4186938304-2392806155-2477"; break }
+    "Moderate" {}
+    "Normal" {}
+    "VeryLow" {}
+    default { $groups = "S-1-5-21-4015811867-4186938304-2392806155-2477" }
+  }
+
+  #-SearchBase "OU=DA Computers,OU=Client Systems,DC=sec,DC=sos,DC=state,DC=nm,DC=us" `
+  # It should be noted, that if the attribute is undefined for the object, it's not returned at all....
+  $notification_targets = $groups | Get-ADLDAPGroupMember -Attributes "cn", "dNSHostName", "objectClass", "pager", "mail" `
+                                                          -SearchBase "DC=sec,DC=sos,DC=state,DC=nm,DC=us" `
+                                                          -Server "sosdc1.sec.sos.state.nm.us" `
+                                                          -Recursive `
+                                                          -Secure
+
+  $email_connector = Get-EmailConnector -SmtpServer "webmail.state.nm.us" -Credential (Get-Credential)
+  
+  
+  #$email_notification = New-EmailNotification
+
+
+  $notification_targets | % {
+
+    $target = $_
+
+    switch ($target) {
+      {"computer" -in $target["objectClass"]} {
+        $target_connector = Get-GrowlConnector -Computer $target['cn'] -Password "123QWEasd"
+        $target_connector.Notify($growl_notification)
+        break
+      }
+
+      {"user" -in $target["objectClass"]} {
+        $email_connector.Send($txt_notification, $target['pager'])
+        $email_connector.Send($email_notification, $target['mail'])
+        break
+      }
+    }
+  }
+
+}
+
+<#
+$splunk_notification = Process-SplunkAlert -Splunk $fake_splunk_alert
+
+$text = $splunk_notification.GetNotification("medium","text")
+
+$text
+#>
