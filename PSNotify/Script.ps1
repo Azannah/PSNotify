@@ -750,7 +750,8 @@ Pass template to function via pipeline.
       #>
 
       # 2do: this breaks if tokens aren't seperated by white space (e.g. {{test}}{{test2}} doesn't work)
-      [regex]::Replace( $template, "(((?<Open>\{{2})([^}{]|(?<![}{])[}{](?![}{]))*)+((?<Close-Open>\}{2})(?(Open)([^}{]|(?<![}{])[}{](?![}{])))*)+)+(?(Open)(?!))", {
+      # Working-ish: "(((?<Open>\{{2})([^}{]|(?<![}{])[}{](?![}{]))*)+((?<Close-Open>\}{2})(?(Open)([^}{]|(?<![}{])[}{](?![}{])))*)+)+(?(Open)(?!))"
+      [regex]::Replace( $template, "(((?(Close)(?(Open)|(?>![}]{2})))(?<Open>\{{2})([^}{]|(?<![}{])[}{](?![}{]))*)+((?<Close-Open>\}{2})(?(Open)([^}{]|(?<![}{])[}{](?![}{])))*)+)+(?(Open)(?!))", {
         Param($match)
 
         $token_name = Script:get_token_name $match.Value
