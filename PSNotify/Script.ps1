@@ -1632,7 +1632,7 @@ function Process-SplunkAlert {
   }
 }
 
-fuction Set-CacheItem {
+function Set-CacheItem {
   [CmdletBinding()]
   Param(
     [Parameter(
@@ -1681,15 +1681,27 @@ fuction Set-CacheItem {
       ValueFromPipelineByPropertyName=$true,
       ValueFromRemainingArguments=$false)]
     #[Alias('Target')]
-    [ValidateSet("Function","Script")]
     [switch]
     # The name of the SMTP server that will proxy email notification
-    $Insecure
+    $Insecure,
+    [Parameter(
+      #HelpMessage="Specify the name of a computer to send messages to a remote system",
+      Mandatory=$false,
+      #ParameterSetName="remote",
+      #Position=0,
+      ValueFromPipeline=$false,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    #[Alias('Target')]    
+    [securestring]
+    # The name of the SMTP server that will proxy email notification
+    $SecureKey
   )
 
   Begin {
 
     $cache_key = $null
+    $cache = Script:read_cache_file
 
     function Script:derive_file_path {
       if ($MyInvocation.PSCommandPath -ne $null) {
@@ -1720,6 +1732,12 @@ fuction Set-CacheItem {
     }
 
     function Script:encrypt_string {
+      Param (
+        [string]$clear_text
+      )
+
+      $Key = Script:get_key
+
       <#
         try
         {
@@ -1758,6 +1776,21 @@ fuction Set-CacheItem {
       #>
     }
 
+    function script:get_key {
+      Param (
+        [securestring]$key_protector = $null
+      )
+
+      $keys = "::keys"
+      $manual_key = "manual"
+
+      if ($cache.Keys -contains $keys) {
+        if (($SecureKey -ne $null) -and ($cache[$keys].Keys -contains $manual_key)) {
+          return [securestring] (Script:deserialize_psobject (Script:decrypt_string $cache[$keys][$manual_key].Value $SecureKey))
+        }
+      }
+    }
+
     function Script:persist_cache_file($cache_object) {
       try {
         Export-Clixml -Path Script:derive_file_path -InputObject $cache_object -Depth 10 -ErrorAction Stop
@@ -1769,59 +1802,65 @@ fuction Set-CacheItem {
     }
 
     function Script:read_cache_file {
+      Param (
+        [string]$file_path = $null
+      )
+
+      if ($file_path -eq $null) {
+        # 2do: can this go in the Param as the default value of $file_path??
+        $file_path = Script:derive_file_path
+      }
+
       # If the cache file doesn't exist, create a new one.
       try {
-        return Import-Clixml -Path Script:get_cache_file_path -ErrorAction Stop
+        return Import-Clixml -Path $file_path -ErrorAction Stop
       } catch {
         return @{}
       }
+    }
+
+    function Script:deserialize_psobject {
+      Param (
+        [string]$serialized_object
+      )
+
+      [byte[]]$serialized_bytes = [System.Convert]::FromBase64String($serialized_object);
+      $memory_stream = New-Object System.IO.MemoryStream $serialized_bytes, 0, $serialized_bytes.Length
+      $binary_formatter = New-Object System.Runtime.Serialization.Formatters.Binary.BinaryFormatter
+
+      
+      return $binary_formatter.Deserialize($memory_stream)
     }
 
     function Script:serialize_psobject {
       Param (
         [psobject]$object
       )
+
       $memory_stream = New-Object System.IO.MemoryStream
       $binary_formatter = New-Object System.Runtime.Serialization.Formatters.Binary.BinaryFormatter
 
+      try {
+        $binary_formatter.Serialize($memory_stream, $object)
+        $serialized_object = [System.Convert]::ToBase64String($memory_stream.ToArray())
+      } finally {
+        $memory_stream.Close()
+      }
 
-      <#
-        PS Variable:\> $ms = New-Object System.IO.MemoryStream
-        PS Variable:\> $bf = New-Object System.Runtime.Serialization.Formatters.Binary.BinaryFormatter $ms, (@{ "one" = 1})
-        New-Object : Cannot find an overload for "BinaryFormatter" and the argument count: "2".
-        At line:1 char:7
-        + $bf = New-Object System.Runtime.Serialization.Formatters.Binary.Binar ...
-        +       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            + CategoryInfo          : InvalidOperation: (:) [New-Object], MethodException
-            + FullyQualifiedErrorId : ConstructorInvokedThrowException,Microsoft.PowerShell.Commands.NewObjectCommand
-
-        PS Variable:\> $bf = New-Object System.Runtime.Serialization.Formatters.Binary.BinaryFormatter
-        PS Variable:\> $bf.Serialize($ms, (@{ "one" = 1}))
-        PS Variable:\> [System.Convert]::ToBase64String($bf.ToArray())
-        Method invocation failed because [System.Runtime.Serialization.Formatters.Binary.BinaryFormatter] does not contain a
-        method named 'ToArray'.
-        At line:1 char:1
-        + [System.Convert]::ToBase64String($bf.ToArray())
-        + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            + CategoryInfo          : InvalidOperation: (:) [], RuntimeException
-            + FullyQualifiedErrorId : MethodNotFound
-
-        PS Variable:\> [System.Convert]::ToBase64String($ms.ToArray())
-        AAEAAAD/////AQAAAAAAAAAEAQAAABxTeXN0ZW0uQ29sbGVjdGlvbnMuSGFzaHRhYmxlBgAAAApMb2FkRmFjdG9yB1ZlcnNpb24LS2V5Q29tcGFyZXIISGFz
-        aFNpemUES2V5cwZWYWx1ZXMAAAMABQULCBtTeXN0ZW0uQ3VsdHVyZUF3YXJlQ29tcGFyZXII7FE4PwEAAAAJAgAAAAMAAAAJAwAAAAkEAAAABAIAAAAbU3lz
-        dGVtLkN1bHR1cmVBd2FyZUNvbXBhcmVyAgAAAAxfY29tcGFyZUluZm8LX2lnbm9yZUNhc2UDACBTeXN0ZW0uR2xvYmFsaXphdGlvbi5Db21wYXJlSW5mbwEJ
-        BQAAAAEQAwAAAAEAAAAGBgAAAANvbmUQBAAAAAEAAAAICAEAAAAEBQAAACBTeXN0ZW0uR2xvYmFsaXphdGlvbi5Db21wYXJlSW5mbwQAAAAGbV9uYW1lCXdp
-        bjMyTENJRAdjdWx0dXJlDW1fU29ydFZlcnNpb24BAAADCAggU3lzdGVtLkdsb2JhbGl6YXRpb24uU29ydFZlcnNpb24GBwAAAAVlbi1VUwAAAAAJBAAACgs=
-
-        PS Variable:\>
-      #>
+      return $serialized_object
     }
-
-
-
   }
 
   Process {
+    $test = @{
+      "Matthew" = "Tristan Arrington";
+      "Aaron" = "Amelia Goldan"
+    }
+
+    $result = Script:deserialize_psobject (Script:serialize_psobject $test)
+
+    break
+    
     $cache = Script:read_cache_file
     
     if ($cache.Keys -notcontains $Namespace) {
@@ -2031,7 +2070,7 @@ $Script:resources = @{
 }
 
 function test_call {
-  Get-CacheItem -Name "test"
+  Set-CacheItem -Name "test" -Value "test"
 }
 
 test_call
