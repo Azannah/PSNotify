@@ -31,8 +31,9 @@
     <Compile Include="growl\Growl.Connector.dll" />
     <Compile Include="growl\Growl.CoreLibrary.dll" />
     <Compile Include="Script.ps1" />
-    <Compile Include="templates\group membership changed %28high%29_growl.txt" />
-    <Compile Include="templates\group membership changed %28high%29_medium.txt" />
+    <Compile Include="templates\group membership changed %28high%29_brief.txt" />
+    <Compile Include="templates\group membership changed %28high%29_standard.txt" />
+    <Compile Include="templates\name _with_ illegal _ chars _.txt" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="growl\" />

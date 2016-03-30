@@ -1776,19 +1776,85 @@ function Set-CacheItem {
       #>
     }
 
-    function script:get_key {
+    function Script:get_random_bytes {
       Param (
-        [securestring]$key_protector = $null
+        [int]$byte_count
+      )
+
+      $random_bytes = New-Object byte[]($byte_count)
+      [System.Security.Cryptography.RNGCryptoServiceProvider]::Create().GetBytes($random_bytes)
+
+      return $random_bytes
+    }
+
+    function Script:get_unsecured_byte_string {
+      Param (
+        [securestring]$secure_string
+      )
+
+      $byte_length = $secure_string.Length * 2
+      $byte_string = New-Object byte[] $byte_length
+      [System.IntPtr] $unmanaged_bytes = [System.Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($secure_string)
+
+      try {
+        for ($i = 0; $i -lt $byte_length; $i++ ) {
+          $byte_string[$i] = [System.Runtime.InteropServices.Marshal]::ReadByte($unmanaged_bytes, $i)
+        }
+      } catch {
+
+      } finally {
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocUnicode($unmanaged_bytes)
+      }
+
+      return $byte_string
+    }
+
+    function Script:get_derived_key {
+      Param (
+        [securestring]$password,
+        [byte[]]$salt
+      )
+
+      $iterations = 1000
+      $key_bytes = 32
+
+      try {
+        $generator = New-Object System.Security.Cryptography.Rfc2898DeriveBytes (Script:get_unsecured_byte_string $password), $salt, $iterations
+      } catch {
+        # 2do Log
+        throw $_
+      }
+
+      return $generator.GetBytes($key_bytes)
+    }
+
+    function Script:get_key {
+      Param (
+        $key_protector = $null
       )
 
       $keys = "::keys"
-      $manual_key = "manual"
+      $keys_master_salt = "master_salt"
+      $master = "cache_master"
 
-      if ($cache.Keys -contains $keys) {
-        if (($SecureKey -ne $null) -and ($cache[$keys].Keys -contains $manual_key)) {
-          return [securestring] (Script:deserialize_psobject (Script:decrypt_string $cache[$keys][$manual_key].Value $SecureKey))
+      if ($cache.Keys -notcontains $keys) {
+        
+        
+        $cache[$keys] = @{}
+        $cache[$keys][$master] = Script:get_random_bytes 32
+      }
+
+      switch ($key_protector) {
+        {$_.GetType() -eq [string]} {
+          $key_protector = $key_protector | ConvertTo-SecureString -AsPlainText -Force
+          $cipher_key = Script:get_derived_key $key_protector $cache[$keys][$keys_master_salt]
+        }
+        {$_.GetType() -eq [securestring]} {
+          $cipher_key = Script:get_derived_key $key_protector $cache[$keys][$keys_master_salt]
         }
       }
+
+      return $cipher_key
     }
 
     function Script:persist_cache_file($cache_object) {
@@ -1805,6 +1871,8 @@ function Set-CacheItem {
       Param (
         [string]$file_path = $null
       )
+
+      return @{}
 
       if ($file_path -eq $null) {
         # 2do: can this go in the Param as the default value of $file_path??
@@ -1857,6 +1925,7 @@ function Set-CacheItem {
       "Aaron" = "Amelia Goldan"
     }
 
+    $result = Script:get_key "this is a test"
     $result = Script:deserialize_psobject (Script:serialize_psobject $test)
 
     break
