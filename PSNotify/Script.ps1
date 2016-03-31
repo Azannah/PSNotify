@@ -1700,10 +1700,10 @@ function Set-CacheItem {
 
   Begin {
 
-    $cache_key = $null
+    $RNG = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
     $cache = Script:read_cache_file
 
-    function Script:derive_file_path {
+    function Private:derive_file_path {
       if ($MyInvocation.PSCommandPath -ne $null) {
         return ($MyInvocation.PSCommandPath.Name.Split('\')[-1] -replace "\.\w+$", ".clixml")
       }
@@ -1711,7 +1711,7 @@ function Set-CacheItem {
       return "_.clixml"
     }
 
-    function Script:decrypt_string {
+    function Private:decrypt_string {
       <#
         try
         {
@@ -1731,12 +1731,13 @@ function Set-CacheItem {
       #>
     }
 
-    function Script:encrypt_string {
+    function Private:encrypt_string {
       Param (
-        [string]$clear_text
+        [string]$clear_text,
+        [string]$key
       )
 
-      $Key = Script:get_key
+      $Key = Private:get_key
 
       <#
         try
@@ -1776,18 +1777,32 @@ function Set-CacheItem {
       #>
     }
 
-    function Script:get_random_bytes {
+    function Private:encrypt_using_dpapi {
+      Param (
+        [byte[]]$data_to_encrypt,
+        [System.Security.Cryptography.DataProtectionScope]$scope
+      )
+
+      [byte[]]$encrypted_data = [System.Security.Cryptography.ProtectedData]::Protect($data_to_encrypt, (Private:get_random_bytes 32), $scope)
+
+      return $encrypted_data
+    }
+
+    function Private:get_random_bytes {
       Param (
         [int]$byte_count
       )
 
-      $random_bytes = New-Object byte[]($byte_count)
-      [System.Security.Cryptography.RNGCryptoServiceProvider]::Create().GetBytes($random_bytes)
+      $buffer = New-Object byte[]($byte_count)
 
-      return $random_bytes
+      # I've read several references to wanting to use the same RNG instance repeatedly
+      #[System.Security.Cryptography.RNGCryptoServiceProvider]::Create().GetBytes($random_bytes)
+      $RNG.GetBytes($buffer)
+
+      return $buffer
     }
 
-    function Script:get_unsecured_byte_string {
+    function Private:get_unsecured_byte_string {
       Param (
         [securestring]$secure_string
       )
@@ -1809,7 +1824,7 @@ function Set-CacheItem {
       return $byte_string
     }
 
-    function Script:get_derived_key {
+    function Private:get_derived_key {
       Param (
         [securestring]$password,
         [byte[]]$salt
@@ -1819,7 +1834,7 @@ function Set-CacheItem {
       $key_bytes = 32
 
       try {
-        $generator = New-Object System.Security.Cryptography.Rfc2898DeriveBytes (Script:get_unsecured_byte_string $password), $salt, $iterations
+        $generator = New-Object System.Security.Cryptography.Rfc2898DeriveBytes (Private:get_unsecured_byte_string $password), $salt, $iterations
       } catch {
         # 2do Log
         throw $_
@@ -1828,9 +1843,10 @@ function Set-CacheItem {
       return $generator.GetBytes($key_bytes)
     }
 
-    function Script:get_key {
+    function Private:get_key {
       Param (
-        $key_protector = $null
+        [securestring]$passphrase_protector = $null,
+        [string]$cert_protector = $null
       )
 
       $keys = "::keys"
@@ -1838,28 +1854,43 @@ function Set-CacheItem {
       $master = "cache_master"
 
       if ($cache.Keys -notcontains $keys) {
-        
-        
+        # The cache must be new (or broken), so create a master key which will be used to encrypt everything
+        $master_key = Private:get_derived_key (Private:get_random_bytes 51) (Private:get_random_bytes 32)
+
+        # Our current user will "own" the master key initially, so lets find out who that is (Use SID which doesn't change)
+        $user_sid = (New-Object System.Security.Principal.NTAccount $Env:USERNAME).Translate([System.Security.Principal.SecurityIdentifier]).Value
+
+        # Prime the cache with the appropriate hashtables - $keys namespace, and initial user
         $cache[$keys] = @{}
-        $cache[$keys][$master] = Script:get_random_bytes 32
+        $cache[$keys][$user_sid] = @{}
+
+        # Find out how the user will be protecting their copy of the master_key initially
+        # DPAPI
+        if (($passphrase_protector -eq $null) -and ($cert_protector -eq $null)) {
+          # Encrypt the cache master key using the Data Protection API and store under the user
+          $encrypted_master_key = Private:encrypt_using_dpapi $master_key, "CurrentUser"
+          $cache[$keys][$user_sid]["dpapi"] = @{ Data = Script:serialize_psobject $encrypted_master_key }
+        }
+        # Passphrase
+        # Certificate
       }
 
-      switch ($key_protector) {
+      <#switch ($key_protector) {
         {$_.GetType() -eq [string]} {
           $key_protector = $key_protector | ConvertTo-SecureString -AsPlainText -Force
-          $cipher_key = Script:get_derived_key $key_protector $cache[$keys][$keys_master_salt]
+          $cipher_key = Private:get_derived_key $key_protector $cache[$keys][$keys_master_salt]
         }
         {$_.GetType() -eq [securestring]} {
-          $cipher_key = Script:get_derived_key $key_protector $cache[$keys][$keys_master_salt]
+          $cipher_key = Private:get_derived_key $key_protector $cache[$keys][$keys_master_salt]
         }
-      }
+      }#>
 
-      return $cipher_key
+      return $master_key
     }
 
     function Script:persist_cache_file($cache_object) {
       try {
-        Export-Clixml -Path Script:derive_file_path -InputObject $cache_object -Depth 10 -ErrorAction Stop
+        Export-Clixml -Path Private:derive_file_path -InputObject $cache_object -Depth 10 -ErrorAction Stop
       } catch {
         return $false
       }
@@ -1876,7 +1907,7 @@ function Set-CacheItem {
 
       if ($file_path -eq $null) {
         # 2do: can this go in the Param as the default value of $file_path??
-        $file_path = Script:derive_file_path
+        $file_path = Private:derive_file_path
       }
 
       # If the cache file doesn't exist, create a new one.
@@ -1925,7 +1956,7 @@ function Set-CacheItem {
       "Aaron" = "Amelia Goldan"
     }
 
-    $result = Script:get_key "this is a test"
+    $result = Private:get_key "this is a test"
     $result = Script:deserialize_psobject (Script:serialize_psobject $test)
 
     break
@@ -1943,7 +1974,7 @@ function Set-CacheItem {
     }
 
     if (-not $Insecure) {
-      $Value = Script:encrypt_string
+      $Value = Private:encrypt_string
     }
 
     $cache[$Namespace][$Name] = @{
@@ -2143,7 +2174,7 @@ function test_call {
 }
 
 test_call
-Get-CacheItem -Name "test"
+#Get-CacheItem -Name "test"
 break
 
 $Script:resources | %{New-Object PSObject -Property $_} | Script:Write-EmbeddedResource | Script:Load-Assembly
