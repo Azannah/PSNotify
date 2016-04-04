@@ -448,7 +448,7 @@ function Get-ADLDAPGroupMember {
 
 }
 
-function Get-CacheItem {
+<#function Get-CacheItem {
   [CmdletBinding()]
   Param(
     [Parameter(
@@ -509,7 +509,7 @@ function Get-CacheItem {
   End {
 
   }
-}
+}#>
 
 function Get-EmailConnector {
 # Perhaps eventually it would be best to use more general SMTP client classes https://msdn.microsoft.com/en-us/library/x5x13z6h(v=vs.110).aspx?cs-save-lang=1&cs-lang=csharp#code-snippet-1
@@ -1632,10 +1632,10 @@ function Process-SplunkAlert {
   }
 }
 
-function Set-CacheItem {
+function Get-SecureCache {
   [CmdletBinding()]
   Param(
-    [Parameter(
+    <#[Parameter(
       #HelpMessage="Specify the name of a computer to send messages to a remote system",
       Mandatory=$true,
       #ParameterSetName="remote",
@@ -1695,314 +1695,517 @@ function Set-CacheItem {
     #[Alias('Target')]    
     [securestring]
     # The name of the SMTP server that will proxy email notification
-    $SecureKey
+    $SecureKey#>
+    [Parameter(
+      #HelpMessage="Specify the name of a computer to send messages to a remote system",
+      Mandatory=$false,
+      #ParameterSetName="remote",
+      #Position=0,
+      ValueFromPipeline=$true,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    #[Alias('Target')]
+    [string]
+    # A path to the cache file that shuold be loaded
+    $Path,
+    [Parameter(
+      #HelpMessage="Specify the name of a computer to send messages to a remote system",
+      Mandatory=$false,
+      #ParameterSetName="remote",
+      #Position=0,
+      ValueFromPipeline=$true,
+      ValueFromPipelineByPropertyName=$true,
+      ValueFromRemainingArguments=$false)]
+    #[Alias('Target')]
+    [securestring]
+    # A path to the cache file that shuold be loaded
+    $Passphrase
   )
 
   Begin {
 
+
     function derive_file_path {
       if ($MyInvocation.PSCommandPath -ne $null) {
-        return ($MyInvocation.PSCommandPath.Name.Split('\')[-1] -replace "\.\w+$", ".clixml")
+        #return ($MyInvocation.PSCommandPath.Name.Split('\')[-1] -replace "\.\w+$", ".clixml")
+        return ($MyInvocation.PSCommandPath -replace "\.\w+$", ".clixml")
       }
 
       return "_.clixml"
     }
 
-    function decrypt_using_aesmanaged {
+    [scriptblock] $cache_object_template = {
+
       Param (
-        [byte[]]$data_to_decrypt,
-        [byte[]]$iv,
-        [byte[]]$key
+        [string] $cache_path,
+        <# 
+        A passphrase or the thumbprint of a certificate in the certificate store that can be used to unlock the cache.
+        If no value is given, the protector defaults to a certificate if the current context (user) has a published
+        certificate. The Microsoft Data Protector API is used when no passphrase or certificate is available. 
+        #>
+        $protector
       )
 
-      [System.Security.Cryptography.AesManaged] $aes_managed = New-Object System.Security.Cryptography.AesManaged
-      $aes_managed.Key = $key
-      $aes_managed.IV = $iv
-      $aes_managed.Padding = [System.Security.Cryptography.PaddingMode]::ISO10126
-
-      $decryptor = $aes_managed.CreateDecryptor()
-
-      $memory_stream = New-Object System.IO.MemoryStream
-
-      #$crypto_stream = New-Object System.Security.Cryptography.CryptoStream $memory_stream, $encryptor, ([System.Security.Cryptography.CryptoStreamMode]::Write)
-      #$crypto_stream.Write($data_to_encrypt, 0, $data_to_encrypt.Length)
-
-      <#
-        try
-        {
-            $object = Import-Clixml -Path .\encryptionTest.xml
-
-            $thumbprint = 'B210C54BF75E201BA77A55A0A023B3AE12CD26FA'
-            $cert = Get-Item -Path Cert:\CurrentUser\My\$thumbprint -ErrorAction Stop
-
-            $key = $cert.PrivateKey.Decrypt($object.Key, $true)
-
-            $secureString = $object.Payload | ConvertTo-SecureString -Key $key
+      function setItem { 
+        Param (
+          [string]$name,
+          [object]$value,
+          [string]$namespace,
+          [bool]$force = $false,
+          [bool]$persist_on_set = $false
+        )
+        
+        # 2do: check for $namespace == ::keys ???
+        if ([string]::IsNullOrWhiteSpace($namespace)) {
+          $namespace = "global"
         }
-        finally
-        {
-            if ($null -ne $key) { [array]::Clear($key, 0, $key.Length) }
-        }
-      #>
-    }
+        
+        <# 
+        2do: decide on scheme to manage passphrase vs. cert vs. dpapi and validate inputs. The following assumes
+        passphrase for testing.
+        #>
+        $master_key = get_key -passphrase_protector $protector
 
-    function encrypt_using_aesmanaged {
-      Param (
-        [byte[]]$data_to_encrypt,
-        [byte[]]$iv,
-        [byte[]]$key
-      )
+        if ($value.GetType().IsSerializable) {
+          # Check if namespace and value already exist. If not, create it
+          if ($cache.keys -notcontains $namespace) {
+            $cache[$namespace] = @{}
 
-      $aes_managed = New-Object System.Security.Cryptography.AesManaged
-      $aes_managed.Key = $key
-      $aes_managed.IV = $iv
-      $aes_managed.Padding = [System.Security.Cryptography.PaddingMode]::ISO10126
-
-      $encryptor = $aes_managed.CreateEncryptor()
-
-      $memory_stream = New-Object System.IO.MemoryStream
-
-      $crypto_stream = New-Object System.Security.Cryptography.CryptoStream $memory_stream, $encryptor, ([System.Security.Cryptography.CryptoStreamMode]::Write)
-      $crypto_stream.Write($data_to_encrypt, 0, $data_to_encrypt.Length)
-
-      $encrypted_data = $memory_stream.ToArray()
-
-      $memory_stream.Dispose()
-      $crypto_stream.Dispose()
-
-      return $encrypted_data
-
-      <#
-        try
-        {
-            $secureString = 'This is my password.  There are many like it, but this one is mine.' | 
-                            ConvertTo-SecureString -AsPlainText -Force
-
-            # Generate our new 32-byte AES key.  I don't recommend using Get-Random for this; the System.Security.Cryptography namespace
-            # offers a much more secure random number generator.
-
-            $key = New-Object byte[](32)
-            $rng = [System.Security.Cryptography.RNGCryptoServiceProvider]::Create()
-
-            $rng.GetBytes($key)
-
-            $encryptedString = ConvertFrom-SecureString -SecureString $secureString -Key $key
-
-            # This is the thumbprint of a certificate on my test system where I have the private key installed.
-
-            $thumbprint = 'B210C54BF75E201BA77A55A0A023B3AE12CD26FA'
-            $cert = Get-Item -Path Cert:\CurrentUser\My\$thumbprint -ErrorAction Stop
-
-            $encryptedKey = $cert.PublicKey.Key.Encrypt($key, $true)
-
-            $object = New-Object psobject -Property @{
-                Key = $encryptedKey
-                Payload = $encryptedString
+          # Check if name/value pair exists within namespace. If it does and $force -ne $true, fail
+          } elseif ($cache[$namespace].Keys -contains $name) {
+            if (-not $force) {
+              # 2do: log
+              return $false
             }
-
-            $object | Export-Clixml .\encryptionTest.xml
-
-        }
-        finally
-        {
-            if ($null -ne $key) { [array]::Clear($key, 0, $key.Length) }
-        }
-      #>
-    }
-
-    function encrypt_using_dpapi {
-      Param (
-        [byte[]]$data_to_encrypt,
-        [System.Security.Cryptography.DataProtectionScope]$scope
-      )
-
-      [byte[]]$encrypted_data = [System.Security.Cryptography.ProtectedData]::Protect($data_to_encrypt, (get_random_bytes 32), $scope)
-
-      return $encrypted_data
-    }
-
-    function get_random_bytes {
-      Param (
-        [int]$byte_count
-      )
-
-      $buffer = New-Object byte[]($byte_count)
-
-      # I've read several references to wanting to use the same RNG instance repeatedly
-      #[System.Security.Cryptography.RNGCryptoServiceProvider]::Create().GetBytes($random_bytes)
-      $RNG.GetBytes($buffer)
-
-      return $buffer
-    }
-
-    function get_unsecured_byte_string {
-      Param (
-        [securestring]$secure_string
-      )
-
-      $byte_length = $secure_string.Length * 2
-      $byte_string = New-Object byte[] $byte_length
-      [System.IntPtr] $unmanaged_bytes = [System.Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($secure_string)
-
-      try {
-        for ($i = 0; $i -lt $byte_length; $i++ ) {
-          $byte_string[$i] = [System.Runtime.InteropServices.Marshal]::ReadByte($unmanaged_bytes, $i)
-        }
-      } catch {
-
-      } finally {
-        [System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocUnicode($unmanaged_bytes)
-      }
-
-      return $byte_string
-    }
-
-    function get_derived_key {
-      Param (
-        [securestring]$password,
-        [byte[]]$salt
-      )
-
-      $iterations = 1000
-      $key_bytes = 32
-
-      try {
-        $generator = New-Object System.Security.Cryptography.Rfc2898DeriveBytes (get_unsecured_byte_string $password), $salt, $iterations
-      } catch {
-        # 2do Log
-        throw $_
-      }
-
-      return $generator.GetBytes($key_bytes)
-    }
-
-    function get_key {
-      Param (
-        [securestring]$passphrase_protector = $null,
-        [string]$cert_protector = $null
-      )
-
-      $keys = "::keys"
-      $keys_master_salt = "master_salt"
-      $master = "cache_master"
-
-      if ($cache.Keys -notcontains $keys) {
-        # The cache must be new (or broken), so create a master key which will be used to encrypt everything
-        $master_key = get_derived_key (
-          [System.Text.UnicodeEncoding]::ASCII.GetString((get_random_bytes 51)) | ConvertTo-SecureString -AsPlainText -Force
-        ) (get_random_bytes 32)
-
-        # Our current user will "own" the master key initially, so lets find out who that is (Use SID which doesn't change)
-        $user_sid = (New-Object System.Security.Principal.NTAccount $Env:USERNAME).Translate([System.Security.Principal.SecurityIdentifier]).Value
-
-        # Prime the cache with the appropriate hashtables - $keys namespace, and initial user
-        $cache[$keys] = @{}
-        $cache[$keys][$user_sid] = @{}
-
-        # Find out how the user will be protecting their copy of the master_key initially
-        # DPAPI
-        if (($passphrase_protector -eq $null) -and ([string]::IsNullOrWhiteSpace($cert_protector))) {
-          # Encrypt the cache master key using the Data Protection API and store under the user
-          $encrypted_master_key = encrypt_using_dpapi $master_key ([System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-          
-          $cache[$keys][$user_sid]["dpapi"] = @{
-            Data = serialize_psobject $encrypted_master_key
-            #Salt = dpapi uses a salt, but must store it with the data because you don't need to provide the salt to decrypt the data...
+            
+            $old_value = $cache[$namespace][$name]
           }
 
-          [array]::Clear($encrypted_master_key)
-        }
-        # Passphrase
-        # Certificate
-      }
+          $data_iv = get_random_bytes 16
 
-      <#switch ($key_protector) {
-        {$_.GetType() -eq [string]} {
-          $key_protector = $key_protector | ConvertTo-SecureString -AsPlainText -Force
-          $cipher_key = get_derived_key $key_protector $cache[$keys][$keys_master_salt]
-        }
-        {$_.GetType() -eq [securestring]} {
-          $cipher_key = get_derived_key $key_protector $cache[$keys][$keys_master_salt]
-        }
-      }#>
+          try {
+            $encrypted_serialized_object = encrypt_using_aesmanaged (
+              serialize_psobject $value
+            ) $data_iv $master_key
+          } catch {
+            # 2do: log
+            throw $_
+          }
 
-      return $master_key
-    }
+          $cache[$namespace][$name] = @{
+            Data = [System.Convert]::ToBase64String($encrypted_serialized_object);
+            IV = [System.Convert]::ToBase64String($data_iv);
+            Timestamp = Get-Date
+          }
 
-    function persist_cache_file($cache_object) {
-      try {
-        Export-Clixml -Path derive_file_path -InputObject $cache_object -Depth 10 -ErrorAction Stop
-      } catch {
+          if ($persist_on_set) {
+            try {
+              persist_cache_file $cache_path $cache
+            } catch {
+              $cache[$namespace][$name] = $old_value
+              return $false
+            }
+
+            return $true
+          }
+
+          return $true
+        }
+
+        # 2do: log as not serializable
         return $false
       }
 
-      return $true
-    }
+      function decrypt_using_aesmanaged {
+        Param (
+          [byte[]]$data_to_decrypt,
+          [byte[]]$iv,
+          [byte[]]$key
+        )
 
-    function read_cache_file {
-      Param (
-        [string]$file_path = $null
-      )
+        [System.Security.Cryptography.AesManaged] $aes_managed = New-Object System.Security.Cryptography.AesManaged
+        $aes_managed.Key = $key
+        $aes_managed.IV = $iv
+        $aes_managed.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
 
-      return @{}
+        $decryptor = $aes_managed.CreateDecryptor()
 
-      if ($file_path -eq $null) {
-        # 2do: can this go in the Param as the default value of $file_path??
-        $file_path = derive_file_path
+        $memory_stream = New-Object System.IO.MemoryStream (,$data_to_decrypt)
+
+        $crypto_stream = New-Object System.Security.Cryptography.CryptoStream $memory_stream, $decryptor, ([System.Security.Cryptography.CryptoStreamMode]::Read)
+
+        $memory_stream_out = New-Object System.IO.MemoryStream
+        #$crypto_stream.Read($data_to_decrypt, 0, $data_to_decrypt.Length)
+        $crypto_stream.CopyTo($memory_stream_out)
+
+        $crypto_stream.Dispose()
+
+        $decrypted_data = $memory_stream_out.ToArray()
+
+        #$crypto_stream.Dispose()
+        $memory_stream.Dispose()
+        $memory_stream_out.Dispose()
+
+        return $decrypted_data
+
+        <#
+          try
+          {
+              $object = Import-Clixml -Path .\encryptionTest.xml
+
+              $thumbprint = 'B210C54BF75E201BA77A55A0A023B3AE12CD26FA'
+              $cert = Get-Item -Path Cert:\CurrentUser\My\$thumbprint -ErrorAction Stop
+
+              $key = $cert.PrivateKey.Decrypt($object.Key, $true)
+
+              $secureString = $object.Payload | ConvertTo-SecureString -Key $key
+          }
+          finally
+          {
+              if ($null -ne $key) { [array]::Clear($key, 0, $key.Length) }
+          }
+        #>
       }
 
-      # If the cache file doesn't exist, create a new one.
-      try {
-        return Import-Clixml -Path $file_path -ErrorAction Stop
-      } catch {
-        return @{}
+      function encrypt_using_aesmanaged {
+        Param (
+          [byte[]]$data_to_encrypt,
+          [byte[]]$iv,
+          [byte[]]$key
+        )
+
+        [System.Security.Cryptography.AesManaged] $aes_managed = New-Object System.Security.Cryptography.AesManaged
+        $aes_managed.Key = $key
+        $aes_managed.IV = $iv
+        $aes_managed.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
+
+        $encryptor = $aes_managed.CreateEncryptor()
+
+        $memory_stream = New-Object System.IO.MemoryStream
+
+        $crypto_stream = New-Object System.Security.Cryptography.CryptoStream $memory_stream, $encryptor, ([System.Security.Cryptography.CryptoStreamMode]::Write)
+        $crypto_stream.Write(([byte[]] $data_to_encrypt), 0, $data_to_encrypt.Length)
+
+        <#
+        Reference: https://www.simple-talk.com/blogs/2012/02/28/oh-no-my-paddings-invalid/
+        CryptoStream has a special method to flush the final block of data – FlushFinalBlock. Calling Stream.Flush() does not flush the 
+        final block, as you might expect. Only by closing the stream or explicitly calling FlushFinalBlock is the final block, with any 
+        padding, encrypted and written to the backing stream. Without this call, the encrypted data is 16 bytes shorter than it should be.
+
+        Hence, $crypto_stream must be disposed (and closed) before the $memory_stream can be converted to an array.
+        #>
+        $crypto_stream.Dispose()
+
+        $encrypted_data = $memory_stream.ToArray()
+
+        $memory_stream.Dispose()
+
+        return $encrypted_data
+
+        <#
+          try
+          {
+              $secureString = 'This is my password.  There are many like it, but this one is mine.' | 
+                              ConvertTo-SecureString -AsPlainText -Force
+
+              # Generate our new 32-byte AES key.  I don't recommend using Get-Random for this; the System.Security.Cryptography namespace
+              # offers a much more secure random number generator.
+
+              $key = New-Object byte[](32)
+              $rng = [System.Security.Cryptography.RNGCryptoServiceProvider]::Create()
+
+              $rng.GetBytes($key)
+
+              $encryptedString = ConvertFrom-SecureString -SecureString $secureString -Key $key
+
+              # This is the thumbprint of a certificate on my test system where I have the private key installed.
+
+              $thumbprint = 'B210C54BF75E201BA77A55A0A023B3AE12CD26FA'
+              $cert = Get-Item -Path Cert:\CurrentUser\My\$thumbprint -ErrorAction Stop
+
+              $encryptedKey = $cert.PublicKey.Key.Encrypt($key, $true)
+
+              $object = New-Object psobject -Property @{
+                  Key = $encryptedKey
+                  Payload = $encryptedString
+              }
+
+              $object | Export-Clixml .\encryptionTest.xml
+
+          }
+          finally
+          {
+              if ($null -ne $key) { [array]::Clear($key, 0, $key.Length) }
+          }
+        #>
       }
-    }
 
-    function deserialize_psobject {
-      Param (
-        [string]$serialized_object
-      )
+      function encrypt_using_dpapi {
+        Param (
+          [byte[]]$data_to_encrypt,
+          [System.Security.Cryptography.DataProtectionScope]$scope
+        )
 
-      [byte[]]$serialized_bytes = [System.Convert]::FromBase64String($serialized_object);
-      $memory_stream = New-Object System.IO.MemoryStream $serialized_bytes, 0, $serialized_bytes.Length
-      $binary_formatter = New-Object System.Runtime.Serialization.Formatters.Binary.BinaryFormatter
+        [byte[]]$encrypted_data = [System.Security.Cryptography.ProtectedData]::Protect($data_to_encrypt, (get_random_bytes 32), $scope)
+
+        return $encrypted_data
+      }
+
+      function get_random_bytes {
+        Param (
+          [int]$byte_count
+        )
+
+        $buffer = New-Object byte[]($byte_count)
+
+        # I've read several references to wanting to use the same RNG instance repeatedly
+        #[System.Security.Cryptography.RNGCryptoServiceProvider]::Create().GetBytes($random_bytes)
+        $RNG.GetBytes($buffer)
+
+        return $buffer
+      }
+
+      function get_unsecured_byte_string {
+        Param (
+          [securestring]$secure_string
+        )
+
+        $byte_length = $secure_string.Length * 2
+        $byte_string = New-Object byte[] $byte_length
+        [System.IntPtr] $unmanaged_bytes = [System.Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($secure_string)
+
+        try {
+          for ($i = 0; $i -lt $byte_length; $i++ ) {
+            $byte_string[$i] = [System.Runtime.InteropServices.Marshal]::ReadByte($unmanaged_bytes, $i)
+          }
+        } catch {
+
+        } finally {
+          [System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocUnicode($unmanaged_bytes)
+        }
+
+        return $byte_string
+      }
+
+      function get_derived_key {
+        Param (
+          [securestring]$password,
+          [byte[]]$salt
+        )
+
+        $iterations = 1000
+        $key_bytes = 32
+
+        try {
+          $generator = New-Object System.Security.Cryptography.Rfc2898DeriveBytes (get_unsecured_byte_string $password), $salt, $iterations
+        } catch {
+          # 2do Log
+          throw $_
+        }
+
+        return $generator.GetBytes($key_bytes)
+      }
+
+      function get_key {
+        Param (
+          [securestring]$passphrase_protector = $null,
+          [string]$cert_protector = $null
+        )
+
+        $keys = "::keys"
+        #$keys_master_salt = "master_salt"
+        #$master = "cache_master"
+
+        # Unless a master unlock key is provided, each user maintains keys under their own context
+        $user_sid = (New-Object System.Security.Principal.NTAccount $Env:USERNAME).Translate([System.Security.Principal.SecurityIdentifier]).Value
+
+        # Check to see if the cache already has keys defined. If not create a master key and encrypt within the current users context.
+        if ($cache.Keys -notcontains $keys) {
+          # The cache must be new (or broken), so create a new master key which will be used to encrypt everything
+          $master_key = get_derived_key (
+            [System.Text.UnicodeEncoding]::ASCII.GetString((get_random_bytes 51)) | ConvertTo-SecureString -AsPlainText -Force
+          ) (get_random_bytes 32)
+
+          # Prime the cache with the appropriate hashtables - $keys namespace, and initial user
+          $cache[$keys] = @{}
+        
+          # Our current user will "own" the master key initially
+          $cache[$keys][$user_sid] = @{}
+
+          # Find out how the user will be protecting their copy of the master_key initially
+          # DPAPI
+          if (($passphrase_protector -eq $null) -and ([string]::IsNullOrWhiteSpace($cert_protector))) {
+            # Encrypt the cache master key using the Data Protection API and store under the user
+            $encrypted_master_key = encrypt_using_dpapi $master_key ([System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+          
+            $cache[$keys][$user_sid]["dpapi"] = @{
+              Data = [System.Convert]::ToBase64String($encrypted_master_key);
+              #IV = dpapi uses an IV during encryption, but must store it with the data because you don't need to provide the salt to decrypt the data...
+              Timestamp = Get-Date;
+            }
+
+            [array]::Clear($encrypted_master_key)
+        
+          # Certificate
+          } elseif (-not [string]::IsNullOrWhiteSpace($cert_protector)) {
+            # 2do
+
+          # Passphrase
+          } else {
+            $passphrase_salt = get_random_bytes 32
+            $data_iv = get_random_bytes 16
+            $encrypted_master_key = encrypt_using_aesmanaged $master_key $data_iv (get_derived_key $passphrase_protector $passphrase_salt)
+
+            $cache[$keys][$user_sid]["passphrase"] = @{
+              Data = [System.Convert]::ToBase64String($encrypted_master_key);
+              IV = [System.Convert]::ToBase64String($data_iv);
+              Salt = [System.Convert]::ToBase64String($passphrase_salt);
+              Timestamp = Get-Date;
+            }
+          }
+
+          return $master_key
+        }
+
+        # The cache already has some keys, which means it's pre-existing. Does the current user have access? In not, throw an exception.
+        if ($cache[$keys].Keys -notcontains $user_sid) {
+          throw [System.UnauthorizedAccessException] "$Env:USERNAME with SID $user_sid does not keys registered with the cache, $cache_path"
+        }
+
+        # The current user has keys stored, so let's get the master key. If provided, a certificate takes presidence over a passphrase
+        if ((-not [string]::IsNullOrWhiteSpace($cert_protector)) -and ($cache[$keys][$user_sid].Keys -contains 'cert')) {
+          # 2do
+
+        } elseif ( #HERE ) {}
+
+        <#switch ($key_protector) {
+          {$_.GetType() -eq [string]} {
+            $key_protector = $key_protector | ConvertTo-SecureString -AsPlainText -Force
+            $cipher_key = get_derived_key $key_protector $cache[$keys][$keys_master_salt]
+          }
+          {$_.GetType() -eq [securestring]} {
+            $cipher_key = get_derived_key $key_protector $cache[$keys][$keys_master_salt]
+          }
+        }#>
+
+        return $master_key
+      }
+
+      function persist_cache_file {
+        Param (
+          [string]$cache_path, 
+          [object]$cache_object
+        )
+        try {
+          Export-Clixml -Path $cache_path -InputObject $cache_object -Depth 10 -ErrorAction Stop
+        } catch {
+          # 2do: log here, up higher up?
+          throw $_
+        }
+      }
+
+      function read_cache_file {
+        Param (
+          [string]$file_path
+        )
+
+        <#
+        If the inputs are validated, this should never receive a null/empty string. However, the cache file
+        might not yet exist.
+        #>
+        if (-not (Test-Path $file_path)) {
+          return @{}
+        }
+
+        try {
+          return Import-Clixml -Path $file_path -ErrorAction Stop
+        } catch {
+          #2do: log
+          throw $_
+        }
+      }
+
+      function deserialize_psobject {
+        Param (
+          #[string]$serialized_object
+          [byte[]]$serialized_object
+        )
+
+        #[byte[]]$serialized_bytes = [System.Convert]::FromBase64String($serialized_object);
+        #$memory_stream = New-Object System.IO.MemoryStream $serialized_bytes, 0, $serialized_bytes.Length
+        $memory_stream = New-Object System.IO.MemoryStream $serialized_object, 0, $serialized_object.Length
+        $binary_formatter = New-Object System.Runtime.Serialization.Formatters.Binary.BinaryFormatter
 
       
-      return $binary_formatter.Deserialize($memory_stream)
-    }
-
-    function serialize_psobject {
-      Param (
-        [psobject]$object
-      )
-
-      $memory_stream = New-Object System.IO.MemoryStream
-      $binary_formatter = New-Object System.Runtime.Serialization.Formatters.Binary.BinaryFormatter
-
-      try {
-        $binary_formatter.Serialize($memory_stream, $object)
-        $serialized_object = [System.Convert]::ToBase64String($memory_stream.ToArray())
-      } finally {
-        $memory_stream.Close()
+        return $binary_formatter.Deserialize($memory_stream)
       }
 
-      return $serialized_object
-    }
+      function serialize_psobject {
+        Param (
+          [psobject]$object
+        )
 
-    $RNG = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
-    $cache = read_cache_file
+        $memory_stream = New-Object System.IO.MemoryStream
+        $binary_formatter = New-Object System.Runtime.Serialization.Formatters.Binary.BinaryFormatter
+
+        try {
+          $binary_formatter.Serialize($memory_stream, $object)
+          #$serialized_object = [System.Convert]::ToBase64String($memory_stream.ToArray())
+          $serialized_object = $memory_stream.ToArray()
+        } finally {
+          $memory_stream.Close()
+        }
+
+        return $serialized_object
+      }
+
+      # 2do validate $protector input
+
+      $RNG = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+      $cache = read_cache_file
+
+      Export-ModuleMember -Function "setItem"
+    }
   }
 
   Process {
-    $test = @{
-      "Matthew" = "Tristan Arrington";
-      "Aaron" = "Amelia Goldan"
-    }
 
-    #"this is a test"
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+      $Path = derive_file_path
+    }
+    
+    return New-Module $cache_object_template -AsCustomObject -ArgumentList $Path, $Passphrase
+
+    #Test DPAPI key set
+    <#$result = get_key
+    Write-Host "DPAPI Protected Key Set As: $result"
     $result = get_key
-    $result = deserialize_psobject (serialize_psobject $test)
+    Write-Host "DPAPI Protected Key Retreived As: $result"#>
+
+    #Test AESManaged encryption/decryption
+    Write-Host "Begin Encryption:`n-----------------------------"
+    $iv = get_random_bytes -byte_count 16
+    Write-Host ("IV: " + [String]::Join(" ", $iv))
+    $key = get_derived_key -password ("123QWEasd" | ConvertTo-SecureString -AsPlainText -Force) -salt (get_random_bytes -byte_count 32)
+    Write-Host ("Key: " + [String]::Join(" ", $key))
+    $serialized_object = serialize_psobject $test
+    Write-Host ("Serialized Test Object: " + [String]::Join(" ", $key))
+    $result = encrypt_using_aesmanaged  -data_to_encrypt $serialized_object -iv $iv -key $key
+    Write-Host ("Encrypted Serialized Object: " + [String]::Join(" ", $result))
+    $result = [System.Convert]::ToBase64String($result)
+    Write-Host "Encrypted object as Base64 string: $result"
+
+    Write-Host "`nBegin Decryption:`n-----------------------------"
+    Write-Host ("IV: " + [String]::Join(" ", $iv))
+    Write-Host ("Key: " + [String]::Join(" ", $key))
+    Write-Host "Encrypted object as Base64 string: $result"
+    $result = [System.Convert]::FromBase64String($result)
+    Write-Host ("Encrypted Serialized Object: " + [String]::Join(" ", $result))
+    $result = decrypt_using_aesmanaged -data_to_decrypt $result -iv $iv -key $key
+    Write-Host ("Serialized Test Object: " + [String]::Join(" ", $key))
+    $result = deserialize_psobject $result
+    Write-Host "Decrypted object:"
+    $result | Out-String | Write-Host
 
     break
     
@@ -2214,11 +2417,14 @@ $Script:resources = @{
   Base64 = "TVqQAAMAAAAEAAAA//8AALgAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAA4fug4AtAnNIbgBTM0hVGhpcyBwcm9ncmFtIGNhbm5vdCBiZSBydW4gaW4gRE9TIG1vZGUuDQ0KJAAAAAAAAABQRQAATAEDAKBVYEwAAAAAAAAAAOAAAiELAQgAAMAAAAAgAAAAAAAA/toAAAAgAAAA4AAAAABAAAAgAAAAEAAABAAAAAAAAAAEAAAAAAAAAAAgAQAAEAAApLMBAAMAQIUAABAAABAAAAAAEAAAEAAAAAAAABAAAAAAAAAAAAAAAKTaAABXAAAAAOAAAKgDAAAAAAAAAAAAAAAAAAAAAAAAAAABAAwAAAAY2gAAHAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAACAAAAAAAAAAAAAAACCAAAEgAAAAAAAAAAAAAAC50ZXh0AAAABLsAAAAgAAAAwAAAABAAAAAAAAAAAAAAAAAAACAAAGAucnNyYwAAAKgDAAAA4AAAABAAAADQAAAAAAAAAAAAAAAAAABAAABALnJlbG9jAAAMAAAAAAABAAAQAAAA4AAAAAAAAAAAAAAAAAAAQAAAQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA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AQDIIQAAAgDVIQAAAQDbIQAAAgDVIQAAAQDkIQAAAQDkIQAAAgDnIQAAAwDrIQAABADVIQAAAQDuHQAAAQDlIgAAAgDsIgAAAQDbIQAAAgDVIQAAAQDbIQAAAgDVIQAAAwDzIgAABADlIgAAAQAwFgAAAQCfDwAAAgDnIQAAAwDrIQAABADVIQAAAQDuHgAAAQDuHgAAAQDuHgAAAQDuHgAAAQDuHgAAAQDuHgAAAQCPBwAAAQCPBwAAAgDBEwAAAwDKEwAAAQBDIwAAAgBPIwAAAQBDIwAAAgBPIwAAAwDVIQAAAQBDIwAAAgBPIwAAAwCjDgAAAQBDIwAAAgBPIwAAAwCjDgAABADVIQAAAQBhIwAAAQBhIwAAAgDVIQAAAQBhIwAAAgCjDgAAAQBhIwAAAgCjDgAAAwDVIQAAAQBhIwAAAgBDIAAAAQBhIwAAAgBDIAAAAwDVIQAAAQBhIwAAAgBDIAAAAwCjDgAAAQBhIwAAAgBDIAAAAwCjDgAABADVIQAAAQDIIQAAAgDVIQAAAQDbIQAAAgDVIQAAAQDbIQAAAgDVIQAAAQDbIQAAAgDVIQAAAQDbIQAAAgCWDgAAAwDVIQAAAQDlIgAAAgDsIgAAAQDbIQAAAgDVIQAAAQDbIQAAAgDVIQAAAwDzIgAABADlIgAAAQAwFgAAAQDlIgAAAgDsIgAAAQDbIQAAAgCWDgAAAwDVIQAAAQDbIQAAAgCWDgAAAwDVIQAABADzIgAABQDlIgAAAQAwFgAAAQB2EAAAAgB7EAAAAwAwFgAABAA3FgAAAQB5FwAAAQDJIwAAAQDJIwAAAgD4IwAAAQAKJAAAAgD4IwAAAQA2EAAAAgAKJAAAAQA2EAAAAgAKJAAAAwBkJAAAAQA2EAAAAgAKJAAAAwBkJAAABABvHwAAAQA2EAAAAgBvHwAAAwByHwAAAQA2EAAAAgBvHwAAAwByHwAABABkJAAAAQCUJQAAAQCfDwAAAQDKJQAAAQD5BQAAAQD5BQAAAQA2EAAAAgAcJgAAAQDrIAAAAQB5FwAAAQClDwAAAQD5BQAAAQD5BQAAAgBAJgAAAQD5BQAAAgBAJgAAAQD5BQAAAgBAJgAAAQD5BQAAAgBAJgAAAQBZJgAAAQBsJgAAAQDuHgAAAQDuHgAAAQDuHgAAAQB3JgAAAQCPBwAAAgCuGgAAAQCPBwAAAQCPBwAAAQCHBwAAAgCYBwAAAwBXBwAAAQCHBwAAAgCYBwAAAwBXBwAABABlBwIABQCBHwAAAQCPBwAAAgCuGgAAAQCPBwAAAgBVDgAAAwCuGgAAAQB3JgAAAgChJgAAAQDuHgAAAQDuHgAAAQDuHgAAAQB3JgAAAgChJgAAAQBZJgIAAgChJgAAAQBZJgIAAgChJgIAAwB5FwAAAQBZJgIAAgB5FwAAAQDjHwAAAQB5FwAAAQD5BQAAAgBTDAAAAQD5BQAAAgBTDAAAAQD5BQAAAgBTDAAAAQD5BSUAIQCpAPsDoACxAPsDoAC5APsDoADBAPsDoADJAPsDqQDRAPsDoADZAPsDoADhAPsDoADpAPsDoADxAPsDoAD5APsDoAABAfsDoAAJAfsDoAARAfsDYRIhAfsDaBIpAfsDNQAJAPsDNQAUAPsDNQAcAPsDNQAxAfkdJBMUABIeKRMkAC8ePRMsADseURMsAPUMVhMkAEMepQBJAVgeNQAcABIeKRM0AC8ePRM8ADseURM8APUMVhMJAO4POQBRAGAebRM0AEMepQAMABIemRNEAC8eURNRAGAeqxMcAIUashMUAIUashNEAEMepQBZAQEExhNhAYEeyhNhAaMe0BNpAbMe1hNZAc8e3BN5AbMe1hOBAe4POQBRAPoepQAxAQQfGACBAQof+xOJASUfAhQxADcfCxSZAVYfJhSZAeUPLBSpAWofMhSxAfsDNQAxAZofVhRRAKYfpQBRAIAQOAcxAcUfbhQxAdAfdhQxAcUffBQxAdgfXAcxAYkagRQxAegfOQBZAL0bhxTBAfMfpQChAA8gjRTJARogkxTRAfUMOQBZAPsDoAAxASsgoRQxAKMevxSJAGIgxxSJAO4PzBTZAfsDJQcJAJgg8RSJAaAg8RSJAcMg9xTpAdcg/hRMAPsDNQBUAPsDNQBUAIUaIhVMAAAhKBVMAAkhMxWZAREhORVZARshxhMxASchRRVcAPsDNQBcAIUaIhVUAAAhKBVcABIemRNkAC8eURNkAEMepQAxASsgWhUxATYhOQBUABIemRNsAC8eURNhAIAQ+wBhAGgGOQBsAEMepQD5AfsDnhVRAGAepRUJAvsDNQARAvsDNQAZAPsDoAAZAvsDshUhAPsDNQApAu4POQAxAbohVhQxAvsDWQ85AvsDChY5AiwiVA9BAvsDNQBBAk8iHxZBAmUiJRZRAoAiKxZRAoYiMxaZAREhOxYxAYsibhRZAp4idhFBAq8iQxZhAroiqQBhAtYiSRZhAt8iNQBBAt8iNQBRAt8iNQBRAlgeNQBxAgEjZxZ5AgkjcxZ5AokacxaBAvsDKweJAiwjlA90APsDNQB0AIUaIhV0ABIemRN8AC8eURN8AEMepQCRAvsDoAAxALcbPxiBAJkjVRiEAPsDNQAxAKAjYhipARIeaxiZAi8ecRiEAIUashOZAkMepQCMAPsDNQCMAIUashMZAJgg8RTpAVYGOQAZANUjOQChAvsDoACpAvsDNQCxAvsDNQC5AvsDNQDBAvsDNQDJAvsDNQDRAtsWpBjZAvsDNQDhAvsDNQDpAvsDNQDxAvsDNQD5AuYkvBj5Au4kNQD5AvkkvBj5AgAl+wD5AhMlwhj5AiolyRj5AkQl0BgRA1Ql1hj5AmglXAf5AnYlaBL5AoQl0BiBAJslvBgZA/sDERkxAbklFxkZA8MlHBkxAdQlgRShAQofMRmEABAmRBmEABogShkxASsgURmMABAmRBmMABogShkxA/sDJQepAWofVxkMAIUaIhWUAIUashOUABAmRBmUABogShk5A1Em5hlRAGAe6xkxAWYm8RkMAPsDNQCUAPsDNQCcAIUaIhUMAHwmXAecAPsDNQCkAPsDNQCkABAmRBmkAIUashOkAIkaRBmkAJYmHBqsABIeMhq0AC8eVhO0AEMepQCRABEhzBSRAKkmfBRZA7smTgdZA8ImTgeRAMkmXxqRAMkmKwdhA/sDvBhpA/sDcxpxA/cmOQBpAwAnpQAOAHQAXAEOAHgAZwEOAHwAbAEOAIAAkwEOAIQAmgEOAIgAnwEOAIwAtAEOAJAAywEOAJQA6gEOAJgACwIOAJwALAIOAKAAUwIOAKQAdgIOAKgAqQIOAKwA0gIOALAA9QIOALQAFAMOALgAOQMOALwAXAMOAMAAgwMOAMQArgMOAMgA4wMOAMwAHAQOANAAWwQOANQAlgQOANgA2wQOANwAFAUOAOAAXQUOAOQAcgUOAOgAfwUOAOwApgUOAPAAzwUOAPQA/gUOAPgAJwYOAPwAVgYOAAABawYOAAQBjgYOAAgBnwYOAAwBugYOABAB2QYOABQB+AYOAGABqQcOAHAB6wcOAHQB9AcOAKQBRggOAKgBwQgOAKwB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DwGTAAIAEQGVAAEAEgGVAAoAEQAPEzUTSRNbE2QToxMVFRsVSxVSFWIVsxe7F1oYdRjTGQ0aExooGj4aBIAAAAIAAAAAAAAAAQAAAG0SLwAAAAIAAAAAAAAAAAAAAAEAXwIAAAAAAgAAAAAAAAAAAAAAIwDJAwAAAAACAAAAAAAAAAAAAAABAGgCAAAAABYAFQAXABUAGQAYABoAGAAfAB4AIAAeAAAAADxNb2R1bGU+AEdyb3dsLkNvbm5lY3Rvci5kbGwARXh0ZW5zaWJsZU9iamVjdABHcm93bC5Db25uZWN0b3IATm90aWZpY2F0aW9uAEtleQBIZWFkZXIAQ3VzdG9tSGVhZGVyAEVycm9yAFJlc3BvbnNlAERpc3BsYXlOYW1lAE1lc3NhZ2VTZWN0aW9uAE1lc3NhZ2VCdWlsZGVyAEVuY3J5cHRpb25SZXN1bHQAQ2FsbGJhY2tEYXRhQmFzZQBHcm93bEV4Y2VwdGlvbgBFcnJvckRlc2NyaXB0aW9uAERpc3BsYXlOYW1lQXR0cmlidXRlAEFwcGxpY2F0aW9uAENhbGxiYWNrQ29udGV4dABOb3RpZmljYXRpb25UeXBlAEVycm9yQ29kZQBDb25uZWN0b3JCYXNlAFJlc3BvbnNlUmVjZWl2ZWRFdmVudEhhbmRsZXIAQ29ubmVjdGlvblN0YXRlAEdyb3dsQ29ubmVjdG9yAFJlc3BvbnNlRXZlbnRIYW5kbGVyAENhbGxiYWNrRXZlbnRIYW5kbGVyAFJlc3BvbnNlVHlwZQBQcmlvcml0eQBDYWxsYmFja0RhdGEAQ3J5cHRvZ3JhcGh5AEhhc2hBbGdvcml0aG1UeXBlAFN5bW1ldHJpY0FsZ29yaXRobVR5cGUASGVhZGVyQ29sbGVjdGlvbgBSZXF1ZXN0VHlwZQBSZXF1ZXN0SW5mbwBQYXNzd29yZE1hbmFnZXIAUGFzc3dvcmQATWVzc2FnZVBhcnNlcgBSZXF1ZXN0RGF0YQBEYXRhSGVhZGVyAG1zY29ybGliAFN5c3RlbQBPYmplY3QAVmFsdWVUeXBlAEV4Y2VwdGlvbgBBdHRyaWJ1dGUATXVsdGljYXN0RGVsZWdhdGUARW51bQBTeXN0ZW0uQ29sbGVjdGlvbnMuR2VuZXJpYwBMaXN0YDEAU3lzdGVtLlJ1bnRpbWUuU2VyaWFsaXphdGlvbgBJU2VyaWFsaXphYmxlAERpY3Rpb25hcnlgMgBkZWZhdWx0TWFjaGluZU5hbWUAZGVmYXVsdFNvZnR3YXJlTmFtZQBkZWZhdWx0U29mdHdhcmVWZXJzaW9uAGRlZmF1bHRQbGF0Zm9ybU5hbWUAZGVmYXVsdFBsYXRmb3JtVmVyc2lvbgBtYWNoaW5lTmFtZQBzb2Z0d2FyZU5hbWUAc29mdHdhcmVWZXJzaW9uAHBsYXRmb3JtTmFtZQBwbGF0Zm9ybVZlcnNpb24AY3VzdG9tVGV4dEF0dHJpYnV0ZXMAR3Jvd2wuQ29yZUxpYnJhcnkAUmVzb3VyY2UAY3VzdG9tQmluYXJ5QXR0cmlidXRlcwAuY3RvcgBnZXRfTWFjaGluZU5hbWUAZ2V0X1NvZnR3YXJlTmFtZQBnZXRfU29mdHdhcmVWZXJzaW9uAGdldF9QbGF0Zm9ybU5hbWUAZ2V0X1BsYXRmb3JtVmVyc2lvbgBnZXRfQ3VzdG9tVGV4dEF0dHJpYnV0ZXMAZ2V0X0N1c3RvbUJpbmFyeUF0dHJpYnV0ZXMAQWRkSW5oZXJpdGVkQXR0cmlidXRlc1RvSGVhZGVycwBTZXRJbmhlcnRpZWRBdHRyaWJ1dGVzRnJvbUhlYWRlcnMAQWRkQ29tbW9uQXR0cmlidXRlc1RvSGVhZGVycwBTZXRDb21tb25BdHRyaWJ1dGVzRnJvbUhlYWRlcnMAQWRkQ3VzdG9tQXR0cmlidXRlc1RvSGVhZGVycwBTZXRDdXN0b21BdHRyaWJ1dGVzRnJvbUhlYWRlcnMAU2V0U29mdHdhcmVJbmZvcm1hdGlvbgBTZXRQbGF0Zm9ybUluZm9ybWF0aW9uAE1hY2hpbmVOYW1lAFNvZnR3YXJlTmFtZQBTb2Z0d2FyZVZlcnNpb24AUGxhdGZvcm1OYW1lAFBsYXRmb3JtVmVyc2lvbgBDdXN0b21UZXh0QXR0cmlidXRlcwBDdXN0b21CaW5hcnlBdHRyaWJ1dGVzAGFwcGxpY2F0aW9uTmFtZQBuYW1lAGlkAHRpdGxlAHRleHQAc3RpY2t5AHByaW9yaXR5AGljb24AY29hbGVzY2luZ0lEAGdldF9BcHBsaWNhdGlvbk5hbWUAc2V0X0FwcGxpY2F0aW9uTmFtZQBnZXRfTmFtZQBzZXRfTmFtZQBnZXRfSUQAc2V0X0lEAGdldF9UaXRsZQBzZXRfVGl0bGUAZ2V0X1RleHQAc2V0X1RleHQAZ2V0X1N0aWNreQBzZXRfU3RpY2t5AGdldF9Qcmlvcml0eQBzZXRfUHJpb3JpdHkAZ2V0X0ljb24Ac2V0X0ljb24AZ2V0X0NvYWxlc2NpbmdJRABzZXRfQ29hbGVzY2luZ0lEAFRvSGVhZGVycwBGcm9tSGVhZGVycwBBcHBsaWNhdGlvbk5hbWUATmFtZQBJRABUaXRsZQBUZXh0AFN0aWNreQBJY29uAENvYWxlc2NpbmdJRABOb25lAGhhc2hBbGdvcml0aG0AZW5jcnlwdGlvbkFsZ29yaXRobQBlbmNyeXB0aW9uS2V5AGtleUhhc2gAcGFzc3dvcmQAc2FsdABJbml0aWFsaXplRW1wdHlLZXkAZ2V0X1Bhc3N3b3JkAGdldF9TYWx0AGdldF9FbmNyeXB0aW9uS2V5AGdldF9LZXlIYXNoAGdldF9IYXNoQWxnb3JpdGhtAHNldF9IYXNoQWxnb3JpdGhtAGdldF9FbmNyeXB0aW9uQWxnb3JpdGhtAHNldF9FbmNyeXB0aW9uQWxnb3JpdGhtAEVuY3J5cHQARGVjcnlwdABHZW5lcmF0ZUtleQBDb21wYXJlAFNhbHQARW5jcnlwdGlvbktleQBLZXlIYXNoAEhhc2hBbGdvcml0aG0ARW5jcnlwdGlvbkFsZ29yaXRobQBEQVRBX0hFQURFUl9QUkVGSVgAQ1VTVE9NX0hFQURFUl9QUkVGSVgAR1JPV0xfUkVTT1VSQ0VfUE9JTlRFUl9QUkVGSVgAQk9PTF9IRUFERVJfVFJVRV9WQUxVRQBCT09MX0hFQURFUl9GQUxTRV9WQUxVRQBIRUFERVJfTkFNRV9SRUdFWF9HUk9VUF9OQU1FAEhFQURFUl9WQUxVRV9SRUdFWF9HUk9VUF9OQU1FAFJFU1BPTlNFX0FDVElPTgBBUFBMSUNBVElPTl9OQU1FAEFQUExJQ0FUSU9OX0lDT04ATk9USUZJQ0FUSU9OU19DT1VOVABOT1RJRklDQVRJT05fTkFNRQBOT1RJRklDQVRJT05fRElTUExBWV9OQU1FAE5PVElGSUNBVElPTl9FTkFCTEVEAE5PVElGSUNBVElPTl9JQ09OAE5PVElGSUNBVElPTl9JRABOT1RJRklDQVRJT05fVElUTEUATk9USUZJQ0FUSU9OX1RFWFQATk9USUZJQ0FUSU9OX1NUSUNLWQBOT1RJRklDQVRJT05fUFJJT1JJVFkATk9USUZJQ0FUSU9OX0NPQUxFU0NJTkdfSUQATk9USUZJQ0FUSU9OX0NBTExCQUNLX1JFU1VMVABOT1RJRklDQVRJT05fQ0FMTEJBQ0tfVElNRVNUQU1QAE5PVElGSUNBVElPTl9DQUxMQkFDS19DT05URVhUAE5PVElGSUNBVElPTl9DQUxMQkFDS19DT05URVhUX1RZUEUATk9USUZJQ0FUSU9OX0NBTExCQUNLX1RBUkdFVABOT1RJRklDQVRJT05fQ0FMTEJBQ0tfQ09OVEVYVF9UQVJHRVQAUkVTT1VSQ0VfSURFTlRJRklFUgBSRVNPVVJDRV9MRU5HVEgAT1JJR0lOX01BQ0hJTkVfTkFNRQBPUklHSU5fU09GVFdBUkVfTkFNRQBPUklHSU5fU09GVFdBUkVfVkVSU0lPTgBPUklHSU5fUExBVEZPUk1fTkFNRQBPUklHSU5fUExBVEZPUk1fVkVSU0lPTgBFUlJPUl9DT0RFAEVSUk9SX0RFU0NSSVBUSU9OAFJFQ0VJVkVEAFNVQlNDUklCRVJfSUQAU1VCU0NSSUJFUl9OQU1FAFNVQlNDUklCRVJfUE9SVABTVUJTQ1JJUFRJT05fVFRMAFN5c3RlbS5UZXh0LlJlZ3VsYXJFeHByZXNzaW9ucwBSZWdleAByZWdFeEhlYWRlcgBOb3RGb3VuZEhlYWRlcgB2YWwAaXNWYWxpZABpc0JsYW5rTGluZQBpc0dyb3dsUmVzb3VyY2VQb2ludGVyAGdyb3dsUmVzb3VyY2VQb2ludGVySUQAaXNJZGVudGlmaWVyAGlzQ3VzdG9tSGVhZGVyAGlzRGF0YUhlYWRlcgBCaW5hcnlEYXRhAGdyb3dsUmVzb3VyY2UASW5pdGlhbGl6ZQBnZXRfQWN0dWFsTmFtZQBnZXRfVmFsdWUAZ2V0X0lzVmFsaWQAZ2V0X0lzQmxhbmtMaW5lAGdldF9Jc0N1c3RvbUhlYWRlcgBnZXRfSXNEYXRhSGVhZGVyAGdldF9Jc0lkZW50aWZpZXIAZ2V0X0lzR3Jvd2xSZXNvdXJjZVBvaW50ZXIAZ2V0X0dyb3dsUmVzb3VyY2VQb2ludGVySUQAZ2V0X0dyb3dsUmVzb3VyY2UAc2V0X0dyb3dsUmVzb3VyY2UAUGFyc2VIZWFkZXIAQWN0dWFsTmFtZQBWYWx1ZQBJc1ZhbGlkAElzQmxhbmtMaW5lAElzQ3VzdG9tSGVhZGVyAElzRGF0YUhlYWRlcgBJc0lkZW50aWZpZXIASXNHcm93bFJlc291cmNlUG9pbnRlcgBHcm93bFJlc291cmNlUG9pbnRlcklEAEdyb3dsUmVzb3VyY2UARm9ybWF0TmFtZQBlcnJvckNvZGUAZGVzY3JpcHRpb24AZ2V0X0Vycm9yQ29kZQBnZXRfRXJyb3JEZXNjcmlwdGlvbgBpc09LAGluUmVzcG9uc2VUbwBjYWxsYmFja0RhdGEAcmVxdWVzdERhdGEAZ2V0X0lzT0sAc2V0X0lzT0sAZ2V0X0lzRXJyb3IAZ2V0X0lzQ2FsbGJhY2sAZ2V0X0NhbGxiYWNrRGF0YQBnZXRfSW5SZXNwb25zZVRvAHNldF9JblJlc3BvbnNlVG8AZ2V0X1JlcXVlc3REYXRhAENhbGxiYWNrUmVzdWx0AFNldENhbGxiYWNrRGF0YQBTZXRBdHRyaWJ1dGVzRnJvbUhlYWRlcnMASXNPSwBJc0Vycm9yAElzQ2FsbGJhY2sASW5SZXNwb25zZVRvAEZldGNoAEhFQURFUl9GT1JNQVQAYmxhbmtMaW5lQnl0ZXMAYnl0ZXMAYmluYXJ5RGF0YQBnZXRfQmluYXJ5RGF0YQBBZGRIZWFkZXIAQWRkQmxhbmtMaW5lAEdldFN0cmluZ0J5dGVzAEdldEJ5dGVzAFRvU3RyaW5nAFBST1RPQ09MX05BTUUAUFJPVE9DT0xfVkVSU0lPTgBwcm90b2NvbEhlYWRlckJ5dGVzAG1lc3NhZ2VUeXBlAGtleQBpbmNsdWRlS2V5SGFzaABzZWN0aW9ucwBBZGRNZXNzYWdlU2VjdGlvbgBFbmNyeXB0ZWRCeXRlcwBJVgBkYXRhAHR5cGUAZ2V0X0RhdGEAZ2V0X1R5cGUARGF0YQBUeXBlAGFyZ3MAZ2V0X0FkZGl0aW9uYWxJbmZvAEFkZGl0aW9uYWxJbmZvAFRJTUVEX09VVABVTlJFQ09HTklaRURfUkVRVUVTVABVTlNVUFBPUlRFRF9ESVJFQ1RJVkUAVU5TVVBQT1JURURfVkVSU0lPTgBOT19OT1RJRklDQVRJT05TX1JFR0lTVEVSRUQASU5WQUxJRF9SRVNPVVJDRV9MRU5HVEgATUFMRk9STUVEX1JFUVVFU1QAVU5SRUNPR05JWkVEX1JFU09VUkNFX0hFQURFUgBJTlRFUk5BTF9TRVJWRVJfRVJST1IASU5WQUxJRF9LRVkATUlTU0lOR19LRVkAUkVRVUlSRURfSEVBREVSX01JU1NJTkcAVU5TVVBQT1JURURfSEFTSF9BTEdPUklUSE0AVU5TVVBQT1JURURfRU5DUllQVElPTl9BTEdPUklUSE0AQVBQTElDQVRJT05fTk9UX1JFR0lTVEVSRUQATk9USUZJQ0FUSU9OX1RZUEVfTk9UX1JFR0lTVEVSRUQARkxBU0hfQ09OTkVDVElPTlNfTk9UX0FMTE9XRUQAU1VCU0NSSVBUSU9OU19OT1RfQUxMT1dFRABBTFJFQURZX1BST0NFU1NFRABDT05ORUNUSU9OX0ZBSUxVUkUAV1JJVEVfRkFJTFVSRQBSRUFEX0ZBSUxVUkUAZGlzcGxheU5hbWUAZ2V0X0Rpc3BsYXlOYW1lAHVybABnZXRfQ2FsbGJhY2tVcmwAU2hvdWxkS2VlcENvbm5lY3Rpb25PcGVuAENhbGxiYWNrVXJsAGVuYWJsZWQAc2V0X0Rpc3BsYXlOYW1lAGdldF9FbmFibGVkAHNldF9FbmFibGVkAEVuYWJsZWQATkVUV09SS19GQUlMVVJFAElOVkFMSURfUkVRVUVTVABVTktOT1dOX1BST1RPQ09MAFVOS05PV05fUFJPVE9DT0xfVkVSU0lPTgBOT1RfQVVUSE9SSVpFRABVTktOT1dOX0FQUExJQ0FUSU9OAFVOS05PV05fTk9USUZJQ0FUSU9OAFRDUF9QT1JUAEVPTQBob3N0bmFtZQBwb3J0AGtleUhhc2hBbGdvcml0aG0Ac2V0X1Bhc3N3b3JkAGdldF9LZXlIYXNoQWxnb3JpdGhtAHNldF9LZXlIYXNoQWxnb3JpdGhtAEdldEtleQBPblJlc3BvbnNlUmVjZWl2ZWQAT25Db21tdW5pY2F0aW9uRmFpbHVyZQBPbkJlZm9yZVNlbmQAU2VuZABTZW5kQXN5bmMAS2V5SGFzaEFsZ29yaXRobQBJbnZva2UASUFzeW5jUmVzdWx0AEFzeW5jQ2FsbGJhY2sAQmVnaW5JbnZva2UARW5kSW52b2tlAEdVSUQAQnl0ZXMARGVsZWdhdGUAV2FpdEZvckNhbGxiYWNrAFVzZXJTdGF0ZQBPS1Jlc3BvbnNlAGFkZF9PS1Jlc3BvbnNlAHJlbW92ZV9PS1Jlc3BvbnNlAEVycm9yUmVzcG9uc2UAYWRkX0Vycm9yUmVzcG9uc2UAcmVtb3ZlX0Vycm9yUmVzcG9uc2UATm90aWZpY2F0aW9uQ2FsbGJhY2sAYWRkX05vdGlmaWNhdGlvbkNhbGxiYWNrAHJlbW92ZV9Ob3RpZmljYXRpb25DYWxsYmFjawBJc0dyb3dsUnVubmluZwBJc0dyb3dsUnVubmluZ0xvY2FsbHkAUmVnaXN0ZXIATm90aWZ5AE9uT0tSZXNwb25zZQBPbkVycm9yUmVzcG9uc2UAT25Ob3RpZmljYXRpb25DYWxsYmFjawB2YWx1ZV9fAE9LAENBTExCQUNLAEVSUk9SAFZlcnlMb3cATW9kZXJhdGUATm9ybWFsAEhpZ2gARW1lcmdlbmN5AHJlc3VsdABub3RpZmljYXRpb25JRABnZXRfUmVzdWx0AGdldF9Ob3RpZmljYXRpb25JRABSZXN1bHQATm90aWZpY2F0aW9uSUQAaGV4Q2hhcnQAU3lzdGVtLlNlY3VyaXR5LkNyeXB0b2dyYXBoeQBSYW5kb21OdW1iZXJHZW5lcmF0b3IAcm5nAGhhc2hUeXBlcwBlbmNyeXB0aW9uVHlwZXMALmNjdG9yAENvbXB1dGVIYXNoAEdlbmVyYXRlQnl0ZXMASGV4RW5jb2RlAEhleFVuZW5jb2RlAEdldEtleUhhc2hUeXBlAEdldEVuY3J5cHRpb25UeXBlAEdldEtleUZyb21TaXplAE1ENQBTSEExAFNIQTI1NgBTSEEzODQAU0hBNTEyAFBsYWluVGV4dABSQzIAREVTAFRyaXBsZURFUwBBRVMAaGVhZGVycwBjdXN0b21IZWFkZXJzAGRhdGFIZWFkZXJzAHBvaW50ZXJzAGFsbEhlYWRlcnMAQWRkSGVhZGVycwBnZXRfSGVhZGVycwBnZXRfQ3VzdG9tSGVhZGVycwBnZXRfRGF0YUhlYWRlcnMAZ2V0X1BvaW50ZXJzAEFzc29jaWF0ZUJpbmFyeURhdGEAR2V0AEdldEhlYWRlclN0cmluZ1ZhbHVlAEdldEhlYWRlckJvb2xlYW5WYWx1ZQBHZXRIZWFkZXJJbnRWYWx1ZQBHZXRIZWFkZXJSZXNvdXJjZVZhbHVlAEZyb21NZXNzYWdlAFRocm93UmVxdWlyZWRIZWFkZXJNaXNzaW5nRXhjZXB0aW9uAEhlYWRlcnMAQ3VzdG9tSGVhZGVycwBEYXRhSGVhZGVycwBQb2ludGVycwBSRUdJU1RFUgBOT1RJRlkAU1VCU0NSSUJFAHJlY2VpdmVkRnJvbQByZWNlaXZlZEJ5AERhdGVUaW1lAHRpbWVSZWNlaXZlZAByZWNlaXZlZFdpdGgAcmVxdWVzdElEAHByZXZpb3VzUmVjZWl2ZWRIZWFkZXJzAGhhbmRsaW5nSW5mbwBnZXRfUmVjZWl2ZWRGcm9tAHNldF9SZWNlaXZlZEZyb20AZ2V0X1JlY2VpdmVkQnkAc2V0X1JlY2VpdmVkQnkAZ2V0X1JlY2VpdmVkV2l0aABzZXRfUmVjZWl2ZWRXaXRoAGdldF9UaW1lUmVjZWl2ZWQAZ2V0X1JlcXVlc3RJRABnZXRfUHJldmlvdXNSZWNlaXZlZEhlYWRlcnMAU2F2ZUhhbmRsaW5nSW5mbwBnZXRfSGFuZGxpbmdJbmZvAFdhc0ZvcndhcmRlZABSZWNlaXZlZEZyb20AUmVjZWl2ZWRCeQBSZWNlaXZlZFdpdGgAVGltZVJlY2VpdmVkAFJlcXVlc3RJRABQcmV2aW91c1JlY2VpdmVkSGVhZGVycwBIYW5kbGluZ0luZm8AcGFzc3dvcmRzAGdldF9QYXNzd29yZHMAQWRkAFJlbW92ZQBQYXNzd29yZHMAREVGQVVMVF9ERVNDUklQVElPTgBwZXJtYW5lbnQAU2VyaWFsaXphdGlvbkluZm8AU3RyZWFtaW5nQ29udGV4dABnZXRfQWN0dWFsUGFzc3dvcmQAc2V0X0FjdHVhbFBhc3N3b3JkAGdldF9EZXNjcmlwdGlvbgBzZXRfRGVzY3JpcHRpb24AZ2V0X1Blcm1hbmVudABzZXRfUGVybWFuZW50AEdldE9iamVjdERhdGEAQWN0dWFsUGFzc3dvcmQARGVzY3JpcHRpb24AUGVybWFuZW50AEdOVFBfU1VQUE9SVEVEX1ZFUlNJT04AQkxBTktfTElORQByZWdFeE1lc3NhZ2VIZWFkZXIAdmVyc2lvbgBkaXJlY3RpdmUAUGFyc2UATWF0Y2gAUGFyc2VHTlRQSGVhZGVyTGluZQBTeXN0ZW0uUmVmbGVjdGlvbgBBc3NlbWJseUluZm9ybWF0aW9uYWxWZXJzaW9uQXR0cmlidXRlAEFzc2VtYmx5RmlsZVZlcnNpb25BdHRyaWJ1dGUAQXNzZW1ibHlWZXJzaW9uQXR0cmlidXRlAFN5c3RlbS5SdW50aW1lLkludGVyb3BTZXJ2aWNlcwBHdWlkQXR0cmlidXRlAENvbVZpc2libGVBdHRyaWJ1dGUAQXNzZW1ibHlDdWx0dXJlQXR0cmlidXRlAEFzc2VtYmx5VHJhZGVtYXJrQXR0cmlidXRlAEFzc2VtYmx5Q29weXJpZ2h0QXR0cmlidXRlAEFzc2VtYmx5Q29tcGFueUF0dHJpYnV0ZQBBc3NlbWJseUNvbmZpZ3VyYXRpb25BdHRyaWJ1dGUAQXNzZW1ibHlEZXNjcmlwdGlvbkF0dHJpYnV0ZQBBc3NlbWJseVByb2R1Y3RBdHRyaWJ1dGUAQXNzZW1ibHlUaXRsZUF0dHJpYnV0ZQBTeXN0ZW0uRGlhZ25vc3RpY3MARGVidWdnYWJsZUF0dHJpYnV0ZQBEZWJ1Z2dpbmdNb2RlcwBTeXN0ZW0uUnVudGltZS5Db21waWxlclNlcnZpY2VzAENvbXBpbGF0aW9uUmVsYXhhdGlvbnNBdHRyaWJ1dGUAUnVudGltZUNvbXBhdGliaWxpdHlBdHRyaWJ1dGUAb2JqAFN0cmluZwBJc051bGxPckVtcHR5AEVudW1lcmF0b3IAR2V0RW51bWVyYXRvcgBLZXlWYWx1ZVBhaXJgMgBnZXRfQ3VycmVudABnZXRfS2V5AE1vdmVOZXh0AElEaXNwb3NhYmxlAERpc3Bvc2UAb3BfSW1wbGljaXQARW52aXJvbm1lbnQAQXNzZW1ibHkAR2V0RXhlY3V0aW5nQXNzZW1ibHkAQXNzZW1ibHlOYW1lAEdldE5hbWUAVmVyc2lvbgBnZXRfVmVyc2lvbgBPcGVyYXRpbmdTeXN0ZW0AZ2V0X09TVmVyc2lvbgBub3RpZmljYXRpb25OYW1lAHZhbHVlAEludDMyAGdldF9Jc1NldABFbXB0eQBUcnlQYXJzZQBSdW50aW1lVHlwZUhhbmRsZQBHZXRUeXBlRnJvbUhhbmRsZQBJc0RlZmluZWQAU3lzdGVtLlRleHQARW5jb2RpbmcAZ2V0X1VURjgAQnl0ZQBBcnJheQBDb3B5AGl2AGVuY3J5cHRlZEJ5dGVzAG1hdGNoaW5nS2V5AE91dEF0dHJpYnV0ZQBvcF9FcXVhbGl0eQBnZXRfSXNSYXdEYXRhAFN0cmluZ0NvbXBhcmlzb24AU3RhcnRzV2l0aABSZXBsYWNlAGdldF9MZW5ndGgAbGluZQBUcmltAEdyb3VwAGdldF9TdWNjZXNzAEdyb3VwQ29sbGVjdGlvbgBnZXRfR3JvdXBzAGdldF9JdGVtAENhcHR1cmUARm9ybWF0AGVycm9yRGVzY3JpcHRpb24AY2FsbGJhY2tDb250ZXh0AGNhbGxiYWNrUmVzdWx0AGdldF9VdGNOb3cAaXNDYWxsYmFjawBlbnVtRmllbGQAQXJndW1lbnROdWxsRXhjZXB0aW9uAEdldFR5cGUAZ2V0X1VuZGVybHlpbmdTeXN0ZW1UeXBlAEZpZWxkSW5mbwBHZXRGaWVsZABNZW1iZXJJbmZvAEdldEN1c3RvbUF0dHJpYnV0ZXMAaGVhZGVyAElFbnVtZXJhYmxlYDEAQWRkUmFuZ2UAVG9BcnJheQBHZXRTdHJpbmcAZ2V0X05ld0xpbmUAQ29uY2F0AHNlY3Rpb24AVG9VcHBlcgBTdHJ1Y3RMYXlvdXRBdHRyaWJ1dGUATGF5b3V0S2luZABTZXJpYWxpemFibGVBdHRyaWJ1dGUAUGFyYW1BcnJheUF0dHJpYnV0ZQBBdHRyaWJ1dGVVc2FnZUF0dHJpYnV0ZQBBdHRyaWJ1dGVUYXJnZXRzAEJvb2xlYW4Ab3BfSW5lcXVhbGl0eQByZXNwb25zZVRleHQAc3RhdGUAcmVzcG9uc2UAbWIAZGVsAHdhaXRGb3JDYWxsYmFjawBTeXN0ZW0uVGhyZWFkaW5nAFBhcmFtZXRlcml6ZWRUaHJlYWRTdGFydABUaHJlYWQAU3RhcnQAU3lzdGVtLk5ldC5Tb2NrZXRzAFRjcENsaWVudABDb25uZWN0AE5ldHdvcmtTdHJlYW0AR2V0U3RyZWFtAFN5c3RlbS5JTwBTdHJlYW0AV3JpdGUAUmVhZABFbmRzV2l0aABEZWJ1Z0luZm8AV3JpdGVMaW5lAFNvY2tldABnZXRfQ2xpZW50AHNldF9CbG9ja2luZwBTb2NrZXRTaHV0ZG93bgBTaHV0ZG93bgBDbG9zZQBvYmplY3QAbWV0aG9kAGNhbGxiYWNrAEd1aWQATmV3R3VpZABDb21iaW5lAE9ic29sZXRlQXR0cmlidXRlAERldGVjdG9yAERldGVjdElmR3Jvd2xJc1J1bm5pbmcAYXBwbGljYXRpb24Abm90aWZpY2F0aW9uVHlwZXMAbm90aWZpY2F0aW9uAFN5c3RlbS5Db21wb25lbnRNb2RlbABEZXNjcmlwdGlvbkF0dHJpYnV0ZQBDcmVhdGUAR2V0VmFsdWVzAFN5c3RlbS5Db2xsZWN0aW9ucwBJRW51bWVyYXRvcgBpbnB1dFN0cmluZwBnZXRfTWVzc2FnZQBDcnlwdG9ncmFwaGljRXhjZXB0aW9uAGhhc2hBbGdvcml0aG1UeXBlAGlucHV0Qnl0ZXMAU0hBMU1hbmFnZWQAU0hBMjU2TWFuYWdlZABTSEEzODRNYW5hZ2VkAFNIQTUxMk1hbmFnZWQATUQ1Q3J5cHRvU2VydmljZVByb3ZpZGVyAGFsZ29yaXRobVR5cGUAUkMyQ3J5cHRvU2VydmljZVByb3ZpZGVyAERFU0NyeXB0b1NlcnZpY2VQcm92aWRlcgBUcmlwbGVERVNDcnlwdG9TZXJ2aWNlUHJvdmlkZXIAUmlqbmRhZWxNYW5hZ2VkAFN5bW1ldHJpY0FsZ29yaXRobQBzZXRfS2V5AEdlbmVyYXRlSVYAc2V0X0lWAGdldF9JVgBQYWRkaW5nTW9kZQBzZXRfUGFkZGluZwBDaXBoZXJNb2RlAHNldF9Nb2RlAElDcnlwdG9UcmFuc2Zvcm0AQ3JlYXRlRW5jcnlwdG9yAFRyYW5zZm9ybUZpbmFsQmxvY2sAZ2V0X0Jsb2NrU2l6ZQBzZXRfQmxvY2tTaXplAENyZWF0ZURlY3J5cHRvcgBsZW5ndGgAR2V0Tm9uWmVyb0J5dGVzAFN0cmluZ0J1aWxkZXIAZ2V0X0NoYXJzAEFwcGVuZABoZXhTdHJpbmcAU3Vic3RyaW5nAFN5c3RlbS5HbG9iYWxpemF0aW9uAE51bWJlclN0eWxlcwBJRm9ybWF0UHJvdmlkZXIAQ29udGFpbnNLZXkAa2V5U2l6ZQBBcmd1bWVudE91dE9mUmFuZ2VFeGNlcHRpb24AcmVxdWlyZWQAQ29udmVydABUb0ludDMyAG1lc3NhZ2UAQ2hhcgBTcGxpdABoZWFkZXJOYW1lAGluZm8AZ2V0X0NvdW50AFZhbHVlQ29sbGVjdGlvbgBnZXRfVmFsdWVzAGNvbnRleHQAR2V0Qm9vbGVhbgBCYXNlNjQARGVjb2RlAEVuY29kZQBBZGRWYWx1ZQBNZW1vcnlTdHJlYW0AU3RyZWFtUmVhZGVyAFRleHRSZWFkZXIAUmVhZExpbmUAZ2V0X0VuZE9mU3RyZWFtAAAnTwByAGkAZwBpAG4ALQBNAGEAYwBoAGkAbgBlAC0ATgBhAG0AZQABKU8AcgBpAGcAaQBuAC0AUwBvAGYAdAB3AGEAcgBlAC0ATgBhAG0AZQABL08AcgBpAGcAaQBuAC0AUwBvAGYAdAB3AGEAcgBlAC0AVgBlAHIAcwBpAG8AbgABKU8AcgBpAGcAaQBuAC0AUABsAGEAdABmAG8AcgBtAC0ATgBhAG0AZQABL08AcgBpAGcAaQBuAC0AUABsAGEAdABmAG8AcgBtAC0AVgBlAHIAcwBpAG8AbgABHUcAcgBvAHcAbABDAG8AbgBuAGUAYwB0AG8AcgAAIUEAcABwAGwAaQBjAGEAdABpAG8AbgAtAE4AYQBtAGUAASNOAG8AdABpAGYAaQBjAGEAdABpAG8AbgAtAE4AYQBtAGUAAR9OAG8AdABpAGYAaQBjAGEAdABpAG8AbgAtAEkARAABJU4AbwB0AGkAZgBpAGMAYQB0AGkAbwBuAC0AVABpAHQAbABlAAEjTgBvAHQAaQBmAGkAYwBhAHQAaQBvAG4ALQBUAGUAeAB0AAEnTgBvAHQAaQBmAGkAYwBhAHQAaQBvAG4ALQBTAHQAaQBjAGsAeQABK04AbwB0AGkAZgBpAGMAYQB0AGkAbwBuAC0AUAByAGkAbwByAGkAdAB5AAEjTgBvAHQAaQBmAGkAYwBhAHQAaQBvAG4ALQBJAGMAbwBuAAE1TgBvAHQAaQBmAGkAYwBhAHQAaQBvAG4ALQBDAG8AYQBsAGUAcwBjAGkAbgBnAC0ASQBEAAEFTgBvAAAHWQBlAHMAACd4AC0AZwByAG8AdwBsAC0AcgBlAHMAbwB1AHIAYwBlADoALwAvAAEBABVJAGQAZQBuAHQAaQBmAGkAZQByAAAFWAAtAAELRABhAHQAYQAtAAEVSABlAGEAZABlAHIATgBhAG0AZQAAF0gAZQBhAGQAZQByAFYAYQBsAHUAZQAAeSgAPwA8AEgAZQBhAGQAZQByAE4AYQBtAGUAPgBbAF4AXAByAFwAbgA6AF0AKwApADoAXABzACsAKAA/ADwASABlAGEAZABlAHIAVgBhAGwAdQBlAD4AKABbAFwAcwBcAFMAXQAqAFwAWgApAHwAKAAuACsAKQApAAANewAwAH0AewAxAH0AABVFAHIAcgBvAHIALQBDAG8AZABlAAEjRQByAHIAbwByAC0ARABlAHMAYwByAGkAcAB0AGkAbwBuAAEfUgBlAHMAcABvAG4AcwBlAC0AQQBjAHQAaQBvAG4AATlOAG8AdABpAGYAaQBjAGEAdABpAG8AbgAtAEMAYQBsAGwAYgBhAGMAawAtAFIAZQBzAHUAbAB0AAE7TgBvAHQAaQBmAGkAYwBhAHQAaQBvAG4ALQBDAGEAbABsAGIAYQBjAGsALQBDAG8AbgB0AGUAeAB0AAFFTgBvAHQAaQBmAGkAYwBhAHQAaQBvAG4ALQBDAGEAbABsAGIAYQBjAGsALQBDAG8AbgB0AGUAeAB0AC0AVAB5AHAAZQABP04AbwB0AGkAZgBpAGMAYQB0AGkAbwBuAC0AQwBhAGwAbABiAGEAYwBrAC0AVABpAG0AZQBzAHQAYQBtAHAAAQN1AAATZQBuAHUAbQBGAGkAZQBsAGQAAFlGAGUAdABjAGgAOgAgACcAZQBuAHUAbQBGAGkAZQBsAGQAJwAgAHAAYQByAGEAbQBlAHQAZQByACAAYwBhAG4AbgBvAHQAIABiAGUAIABuAHUAbABsAC4AAQMNAAAVewAwAH0AOgAgAHsAMQB9AA0ACgAAAy0AAQ97ADAAfQA6AHsAMQB9AAAXewAwAH0AOgB7ADEAfQAuAHsAMgB9AAAXewAwAH0AIAB7ADEAfQAgAHsAMgB9AAANTABlAG4AZwB0AGgAABF7ADAAfQAvAHsAMQB9ACAAAAlHAE4AVABQAAAHMQAuADAAACFBAHAAcABsAGkAYwBhAHQAaQBvAG4ALQBJAGMAbwBuAAEtVQBuAGQAZQBmAGkAbgBlAGQAIABOAG8AdABpAGYAaQBjAGEAdABpAG8AbgAAM04AbwB0AGkAZgBpAGMAYQB0AGkAbwBuAC0ARABpAHMAcABsAGEAeQAtAE4AYQBtAGUAASlOAG8AdABpAGYAaQBjAGEAdABpAG8AbgAtAEUAbgBhAGIAbABlAGQAARMxADIANwAuADAALgAwAC4AMQAAUVQAaABlACAAZABlAHMAdABpAG4AYQB0AGkAbwBuACAAcwBlAHIAdgBlAHIAIAB3AGEAcwAgAG4AbwB0ACAAcgBlAGEAYwBoAGEAYgBsAGUAAICJVABoAGUAIAByAGUAcQB1AGUAcwB0ACAAZgBhAGkAbABlAGQAIAB0AG8AIABiAGUAIABzAGUAbgB0ACAAcwB1AGMAYwBlAHMAcwBmAHUAbABsAHkAIABkAHUAZQAgAHQAbwAgAGEAIABuAGUAdAB3AG8AcgBrACAAcAByAG8AYgBsAGUAbQAuAAAJDQAKAA0ACgAAgItUAGgAZQAgAHIAZQBzAHAAbwBuAHMAZQAgAGYAYQBpAGwAZQBkACAAdABvACAAYgBlACAAcgBlAGEAZAAgAHMAdQBjAGMAZQBzAHMAZgB1AGwAbAB5ACAAZAB1AGUAIAB0AG8AIABhACAAbgBlAHQAdwBvAHIAawAgAHAAcgBvAGIAbABlAG0ALgAAJ04AbwB0AGkAZgBpAGMAYQB0AGkAbwBuAHMALQBDAG8AdQBuAHQAATlOAG8AdABpAGYAaQBjAGEAdABpAG8AbgAtAEMAYQBsAGwAYgBhAGMAawAtAFQAYQByAGcAZQB0AAEXaQBuAHAAdQB0AFMAdAByAGkAbgBnAABnQwBvAG0AcAB1AHQAZQBIAGEAcwBoADoAIAAnAGkAbgBwAHUAdABTAHQAcgBpAG4AZwAnACAAcABhAHIAYQBtAGUAdABlAHIAIABjAGEAbgBuAG8AdAAgAGIAZQAgAG4AdQBsAGwAAS1DAG8AbQBwAHUAdABlAEgAYQBzAGgAOgAgAHsAMAB9ACAALQAgAHsAMQB9AAEVaQBuAHAAdQB0AEIAeQB0AGUAcwAAZUMAbwBtAHAAdQB0AGUASABhAHMAaAA6ACAAJwBpAG4AcAB1AHQAQgB5AHQAZQBzACcAIABwAGEAcgBhAG0AZQB0AGUAcgAgAGMAYQBuAG4AbwB0ACAAYgBlACAAbgB1AGwAbAABXUUAbgBjAHIAeQBwAHQAOgAgACcAaQBuAHAAdQB0AEIAeQB0AGUAcwAnACAAcABhAHIAYQBtAGUAdABlAHIAIABjAGEAbgBuAG8AdAAgAGIAZQAgAG4AdQBsAGwAAYDLRQBuAGMAcgB5AHAAdAA6ACAAQQBsAGcAbwByAGkAdABoAG0AIAAnAHsAMAB9ACcAIAByAGUAcQB1AGkAcgBlAHMAIABhAG4AIABtAGkAbgBpAG0AdQBtACAAawBlAHkAIABzAGkAegBlACAAbwBmACAAewAxAH0AIAAtACAAKAB5AG8AdQAgAHMAdQBwAHAAbABpAGUAZAAgAGEAIABrAGUAeQAgAHQAaABhAHQAIAB3AGEAcwAgAHsAMgB9ACAAbABvAG4AZwApAAGAuUUAbgBjAHIAeQBwAHQAOgAgAEEAbABnAG8AcgBpAHQAaABtACAAJwB7ADAAfQAnACAAcgBlAHEAdQBpAHIAZQBzACAAYQBuACAASQBWACAAcwBpAHoAZQAgAG8AZgAgAHsAMQB9ACAALQAgACgAeQBvAHUAIABzAHUAcABwAGwAaQBlAGQAIABhAG4AIABJAFYAIAB0AGgAYQB0ACAAdwBhAHMAIAB7ADIAfQAgAGwAbwBuAGcAKQABJUUAbgBjAHIAeQBwAHQAOgAgAHsAMAB9ACAALQAgAHsAMQB9AAElRABlAGMAcgB5AHAAdAA6ACAAewAwAH0AIAAtACAAewAxAH0AAR1lAG4AYwByAHkAcAB0AGUAZABCAHkAdABlAHMAAGVEAGUAYwByAHkAcAB0ADoAIAAnAGUAbgBjAHIAeQBwAHQAZQBkAEIAeQB0AGUAcwAnACAAcABhAHIAYQBtAGUAdABlAHIAIABjAGEAbgBuAG8AdAAgAGIAZQAgAG4AdQBsAGwAAYDLRABlAGMAcgB5AHAAdAA6ACAAQQBsAGcAbwByAGkAdABoAG0AIAAnAHsAMAB9ACcAIAByAGUAcQB1AGkAcgBlAHMAIABhAG4AIABtAGkAbgBpAG0AdQBtACAAawBlAHkAIABzAGkAegBlACAAbwBmACAAewAxAH0AIAAtACAAKAB5AG8AdQAgAHMAdQBwAHAAbABpAGUAZAAgAGEAIABrAGUAeQAgAHQAaABhAHQAIAB3AGEAcwAgAHsAMgB9ACAAbABvAG4AZwApAAGAuUQAZQBjAHIAeQBwAHQAOgAgAEEAbABnAG8AcgBpAHQAaABtACAAJwB7ADAAfQAnACAAcgBlAHEAdQBpAHIAZQBzACAAYQBuACAASQBWACAAcwBpAHoAZQAgAG8AZgAgAHsAMQB9ACAALQAgACgAeQBvAHUAIABzAHUAcABwAGwAaQBlAGQAIABhAG4AIABJAFYAIAB0AGgAYQB0ACAAdwBhAHMAIAB7ADIAfQAgAGwAbwBuAGcAKQABC2IAeQB0AGUAcwAAV0gAZQB4AEUAbgBjAG8AZABlADoAIAAnAGIAeQB0AGUAcwAnACAAcABhAHIAYQBtAGUAdABlAHIAIABjAGEAbgBuAG8AdAAgAGIAZQAgAG4AdQBsAGwAASEwADEAMgAzADQANQA2ADcAOAA5AEEAQgBDAEQARQBGAAApSABlAHgARQBuAGMAbwBkAGUAOgAgAHsAMAB9ACAALQAgAHsAMQB9AAETaABlAHgAUwB0AHIAaQBuAGcAAGNIAGUAeABVAG4AZQBuAGMAbwBkAGUAOgAgACcAaABlAHgAUwB0AHIAaQBuAGcAJwAgAHAAYQByAGEAbQBlAHQAZQByACAAYwBhAG4AbgBvAHQAIABiAGUAIABuAHUAbABsAAFXTgBvACAAbQBhAHQAYwBoAGkAbgBnACAAaABhAHMAaAAgAHQAeQBwAGUAIABmAG8AdQBuAGQAIABmAG8AcgAgAG4AYQBtAGUAIAAnAHsAMAB9ACcALgABbU4AbwAgAG0AYQB0AGMAaABpAG4AZwAgAGUAbgBjAHIAeQBwAHQAaQBvAG4AIABhAGwAZwBvAHIAaQB0AGgAbQAgAGYAbwB1AG4AZAAgAGYAbwByACAAbgBhAG0AZQAgACcAewAwAH0AJwAuAAEPawBlAHkAUwBpAHoAZQAAgM1HAGUAdABLAGUAeQBGAHIAbwBtAFMAaQB6AGUAOgAgAFQAaABlACAAcgBlAHEAdQBlAHMAdABlAGQAIABrAGUAeQAgAHMAaQB6AGUAIABpAHMAIABsAG8AbgBnAGUAcgAgAHQAaABhAG4AIAB0AGgAZQAgAHMAdQBwAHAAbABpAGUAZAAgAGsAZQB5AC4AIABLAGUAeQAgAHMAaQB6AGUAOgAgAHsAMAB9ACwAIABrAGUAeQAgAGwAZQBuAGcAdABoADoAIAB7ADEAfQAAM0cAZQB0AEsAZQB5AEYAcgBvAG0AUwBpAHoAZQA6ACAAewAwAH0AIAAtACAAewAxAH0AAQlUAFIAVQBFAAAHWQBFAFMAAC9SAGUAcQB1AGkAcgBlAGQAIABoAGUAYQBkAGUAcgAgAG0AaQBzAHMAaQBuAGcAADNbAE4AbwAgAGQAZQBzAGMAcgBpAHAAdABpAG8AbgAgAHAAcgBvAHYAaQBkAGUAZABdAAARcABhAHMAcwB3AG8AcgBkAAAXZABlAHMAYwByAGkAcAB0AGkAbwBuAAATcABlAHIAbQBhAG4AZQBuAHQAAA9WAGUAcgBzAGkAbwBuAAATRABpAHIAZQBjAHQAaQB2AGUAADVVAG4AcgBlAGMAbwBnAG4AaQB6AGUAZAAgAHIAZQBzAHAAbwBuAHMAZQAgAHQAeQBwAGUAACdVAG4AcwB1AHAAcABvAHIAdABlAGQAIAB2AGUAcgBzAGkAbwBuAAArVQBuAHIAZQBjAG8AZwBuAGkAegBlAGQAIAByAGUAcwBwAG8AbgBzAGUAACtJAG4AdABlAHIAbgBhAGwAIABzAGUAcgB2AGUAcgAgAGUAcgByAG8AcgAAXygARwBOAFQAUAAvACkAKAA/ADwAVgBlAHIAcwBpAG8AbgA+ACgALgBcAC4ALgApACkAXABzACsAKAA/ADwARABpAHIAZQBjAHQAaQB2AGUAPgAoAFwAUwArACkAKQAAAAAqaOwSTtmlQqy7pRQZnwSvAAi3elxWGTTgiQYVEh0BEhQGFRIlAg4OAgYOBwYVEiUCDg4IE+WdguAHsGQIBhUSJQIOEikDIAABAyAADgggABUSJQIODgkgABUSJQIOEikGIAEBEoCECAACARIIEoCEBQACAQ4OAygADggoABUSJQIODgkoABUSJQIOEikCBgIDBhFwAwYSKQggBQEODg4ODg4gCQEODg4ODhIpAhFwDgQgAQEOAyAAAgQgAQECBCAAEXAFIAEBEXAEIAASKQUgAQESKQUgABKAhAcAARIMEoCEAygAAgQoABFwBCgAEikDBhIQAwYRfAQGEYCAAwYdBQkgAwEOEXwRgIAEIAAdBQQgABF8BSABARF8BSAAEYCABiABARGAgAYgAREwHQUJIAIRMB0FEB0FCCACHQUdBR0FCgADEhAOEXwRgIAOAAYCDg4OEXwRgIAQEhAEKAAdBQQoABF8BSgAEYCACkQAYQB0AGEALQAEWAAtACZ4AC0AZwByAG8AdwBsAC0AcgBlAHMAbwB1AHIAYwBlADoALwAvAAZZAGUAcwAETgBvABRIAGUAYQBkAGUAcgBOAGEAbQBlABZIAGUAYQBkAGUAcgBWAGEAbAB1AGUAHlIAZQBzAHAAbwBuAHMAZQAtAEEAYwB0AGkAbwBuACBBAHAAcABsAGkAYwBhAHQAaQBvAG4ALQBOAGEAbQBlACBBAHAAcABsAGkAYwBhAHQAaQBvAG4ALQBJAGMAbwBuACZOAG8AdABpAGYAaQBjAGEAdABpAG8AbgBzAC0AQwBvAHUAbgB0ACJOAG8AdABpAGYAaQBjAGEAdABpAG8AbgAtAE4AYQBtAGUAMk4AbwB0AGkAZgBpAGMAYQB0AGkAbwBuAC0ARABpAHMAcABsAGEAeQAtAE4AYQBtAGUAKE4AbwB0AGkAZgBpAGMAYQB0AGkAbwBuAC0ARQBuAGEAYgBsAGUAZAAiTgBvAHQAaQBmAGkAYwBhAHQAaQBvAG4ALQBJAGMAbwBuAB5OAG8AdABpAGYAaQBjAGEAdABpAG8AbgAtAEkARAAkTgBvAHQAaQBmAGkAYwBhAHQAaQBvAG4ALQBUAGkAdABsAGUAIk4AbwB0AGkAZgBpAGMAYQB0AGkAbwBuAC0AVABlAHgAdAAmTgBvAHQAaQBmAGkAYwBhAHQAaQBvAG4ALQBTAHQAaQBjAGsAeQAqTgBvAHQAaQBmAGkAYwBhAHQAaQBvAG4ALQBQAHIAaQBvAHIAaQB0AHkANE4AbwB0AGkAZgBpAGMAYQB0AGkAbwBuAC0AQwBvAGEAbABlAHMAYwBpAG4AZwAtAEkARAA4TgBvAHQAaQBmAGkAYwBhAHQAaQBvAG4ALQBDAGEAbABsAGIAYQBjAGsALQBSAGUAcwB1AGwAdAA+TgBvAHQAaQBmAGkAYwBhAHQAaQBvAG4ALQBDAGEAbABsAGIAYQBjAGsALQBUAGkAbQBlAHMAdABhAG0AcAA6TgBvAHQAaQBmAGkAYwBhAHQAaQBvAG4ALQBDAGEAbABsAGIAYQBjAGsALQBDAG8AbgB0AGUAeAB0AEROAG8AdABpAGYAaQBjAGEAdABpAG8AbgAtAEMAYQBsAGwAYgBhAGMAawAtAEMAbwBuAHQAZQB4AHQALQBUAHkAcABlADhOAG8AdABpAGYAaQBjAGEAdABpAG8AbgAtAEMAYQBsAGwAYgBhAGMAawAtAFQAYQByAGcAZQB0AEhOAG8AdABpAGYAaQBjAGEAdABpAG8AbgAtAEMAYQBsAGwAYgBhAGMAawAtAEMAbwBuAHQAZQB4AHQALQBUAGEAcgBnAGUAdAAUSQBkAGUAbgB0AGkAZgBpAGUAcgAMTABlAG4AZwB0AGgAJk8AcgBpAGcAaQBuAC0ATQBhAGMAaABpAG4AZQAtAE4AYQBtAGUAKE8AcgBpAGcAaQBuAC0AUwBvAGYAdAB3AGEAcgBlAC0ATgBhAG0AZQAuTwByAGkAZwBpAG4ALQBTAG8AZgB0AHcAYQByAGUALQBWAGUAcgBzAGkAbwBuAChPAHIAaQBnAGkAbgAtAFAAbABhAHQAZgBvAHIAbQAtAE4AYQBtAGUALk8AcgBpAGcAaQBuAC0AUABsAGEAdABmAG8AcgBtAC0AVgBlAHIAcwBpAG8AbgAURQByAHIAbwByAC0AQwBvAGQAZQAiRQByAHIAbwByAC0ARABlAHMAYwByAGkAcAB0AGkAbwBuABBSAGUAYwBlAGkAdgBlAGQAGlMAdQBiAHMAYwByAGkAYgBlAHIALQBJAEQAHlMAdQBiAHMAYwByAGkAYgBlAHIALQBOAGEAbQBlAB5TAHUAYgBzAGMAcgBpAGIAZQByAC0AUABvAHIAdAAgUwB1AGIAcwBjAHIAaQBwAHQAaQBvAG4ALQBUAFQATAADBhItAwYSFAMGEjEFIAIBDg4FIAIBDgIGIAIBDhIpBCAAEjEFIAEBEjEFAAESFA4EKAASMQQAAQ4OAgYIBSACAQgOAyAACAcAARIcEoCEAygACAMGEnQEBhKAnAQgABJ0BSAAEoCcCCADAQ4SSBE1BwABEiASgIQHIAIBEoCEAgQoABJ0BSgAEoCcBAABDhwUewAwAH0AOgAgAHsAMQB9AA0ACgAGBhUSHQEFBwYVEh0BEjEIIAAVEh0BEjEFIAEBEhQFAAEdBQ4IKAAVEh0BEjEIRwBOAFQAUAAGMQAuADAABwYVEh0BEigIIAIBEYCIEhAFIAEBEWwHIAMBDhIQAgUgAQESKAcgAgEdBR0FBwABEjQSgIQDBh0cByADAQgOHRwEIAAdHAQoAB0celQAaABlACAAcwBlAHIAdgBlAHIAIAB0AGkAbQBlAGQAIABvAHUAdAAgAHcAYQBpAHQAaQBuAGcAIABmAG8AcgAgAHQAaABlACAAcgBlAG0AYQBpAG4AZABlAHIAIABvAGYAIAB0AGgAZQAgAHIAZQBxAHUAZQBzAHQAKFUAbgByAGUAYwBvAGcAbgBpAHoAZQBkACAAcgBlAHEAdQBlAHMAdAAqVQBuAHMAdQBwAHAAbwByAHQAZQBkACAAZABpAHIAZQBjAHQAaQB2AGUAJlUAbgBzAHUAcABwAG8AcgB0AGUAZAAgAHYAZQByAHMAaQBvAG4ANk4AbwAgAG4AbwB0AGkAZgBpAGMAYQB0AGkAbwBuAHMAIAByAGUAZwBpAHMAdABlAHIAZQBkAC5JAG4AdgBhAGwAaQBkACAAcgBlAHMAbwB1AHIAYwBlACAAbABlAG4AZwB0AGgAIk0AYQBsAGYAbwByAG0AZQBkACAAcgBlAHEAdQBlAHMAdAA4VQBuAHIAZQBjAG8AZwBuAGkAegBlAGQAIAByAGUAcwBvAHUAcgBjAGUAIABoAGUAYQBkAGUAcgAqSQBuAHQAZQByAG4AYQBsACAAcwBlAHIAdgBlAHIAIABlAHIAcgBvAHIAIEkAbgB2AGEAbABpAGQAIABrAGUAeQAgAGgAYQBzAGgAIE0AaQBzAHMAaQBuAGcAIABrAGUAeQAgAGgAYQBzAGgALlIAZQBxAHUAaQByAGUAZAAgAGgAZQBhAGQAZQByACAAbQBpAHMAcwBpAG4AZwBGVQBuAHMAdQBwAHAAbwByAHQAZQBkACAAcABhAHMAcwB3AG8AcgBkACAAaABhAHMAaAAgAGEAbABnAG8AcgBpAHQAaABtAEBVAG4AcwB1AHAAcABvAHIAdABlAGQAIABlAG4AYwByAHkAcAB0AGkAbwBuACAAYQBsAGcAbwByAGkAdABoAG0ANEEAcABwAGwAaQBjAGEAdABpAG8AbgAgAG4AbwB0ACAAcgBlAGcAaQBzAHQAZQByAGUAZABATgBvAHQAaQBmAGkAYwBhAHQAaQBvAG4AIAB0AHkAcABlACAAbgBvAHQAIAByAGUAZwBpAHMAdABlAHIAZQBkAE5GAGwAYQBzAGgALQBiAGEAcwBlAGQAIABjAG8AbgBuAGUAYwB0AGkAbwBuAHMAIABhAHIAZQAgAG4AbwB0ACAAYQBsAGwAbwB3AGUAZABQVABoAGkAcwAgAHMAZQByAHYAZQByACAAZABvAGUAcwAgAG4AbwB0ACAAYQBsAGwAbwB3ACAAcwB1AGIAcwBjAHIAaQBwAHQAaQBvAG4AcwCBJFQAaABlACAAcgBlAHEAdQBlAHMAdAAgAHcAYQBzACAAYQBsAHIAZQBhAGQAeQAgAGgAYQBuAGQAbABlAGQAIABiAHkAIAB0AGgAaQBzACAAbQBhAGMAaABpAG4AZQAuACAAKABOAG8AcgBtAGEAbABsAHkALAAgAHQAaABpAHMAIABtAGUAYQBuAHMAIAB0AGgAZQAgAG0AZQBzAHMAYQBnAGUAIAB3AGEAcwAgAGYAbwByAHcAYQByAGQAZQBkACAAYgBhAGMAawAgAHQAbwAgAGEAIABtAGEAYwBoAGkAbgBlACAAdABoAGEAdAAgAGgAYQBkACAAYQBsAHIAZQBhAGQAeQAgAGYAbwByAHcAYQByAGQAZQBkACAAaQB0AC4AKQBQVABoAGUAIABkAGUAcwB0AGkAbgBhAHQAaQBvAG4AIABzAGUAcgB2AGUAcgAgAHcAYQBzACAAbgBvAHQAIAByAGUAYQBjAGgAYQBiAGwAZQCAiFQAaABlACAAcgBlAHEAdQBlAHMAdAAgAGYAYQBpAGwAZQBkACAAdABvACAAYgBlACAAcwBlAG4AdAAgAHMAdQBjAGMAZQBzAHMAZgB1AGwAbAB5ACAAZAB1AGUAIAB0AG8AIABhACAAbgBlAHQAdwBvAHIAawAgAHAAcgBvAGIAbABlAG0ALgCAilQAaABlACAAcgBlAHMAcABvAG4AcwBlACAAZgBhAGkAbABlAGQAIAB0AG8AIABiAGUAIAByAGUAYQBkACAAcwB1AGMAYwBlAHMAcwBmAHUAbABsAHkAIABkAHUAZQAgAHQAbwAgAGEAIABuAGUAdAB3AG8AcgBrACAAcAByAG8AYgBsAGUAbQAuAAcAARJEEoCEBwABEkgSgIQIIAQBDg4SKQIHAAESTBKAhATIAAAABMkAAAAELAEAAAQtAQAABC4BAAAELwEAAASQAQAABJEBAAAEkgEAAASTAQAABPQBAAAEDVoAAAgNAAoADQAKAAYgAwEODggEIAASEAUgAgEOHAYgAgESIBwFIAECEiwJIAQBEiwSWAIc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AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAQAAAAGAAAgAAAAAAAAAAAAAAAAAAAAQABAAAAMAAAgAAAAAAAAAAAAAAAAAAAAQAAAAAASAAAAFjgAABQAwAAAAAAAAAAAABQAzQAAABWAFMAXwBWAEUAUgBTAEkATwBOAF8ASQBOAEYATwAAAAAAvQTv/gAAAQAAAAIAAQAEAAAAAgAAAAQAPwAAAAAAAAAEAAAAAgAAAAAAAAAAAAAAAAAAAEQAAAABAFYAYQByAEYAaQBsAGUASQBuAGYAbwAAAAAAJAAEAAAAVAByAGEAbgBzAGwAYQB0AGkAbwBuAAAAAAAAALAEsAIAAAEAUwB0AHIAaQBuAGcARgBpAGwAZQBJAG4AZgBvAAAAjAIAAAEAMAAwADAAMAAwADQAYgAwAAAATAAVAAEAQwBvAG0AcABhAG4AeQBOAGEAbQBlAAAAAABlAGwAZQBtAGUAbgB0ACAAYwBvAGQAZQAgAHAAcgBvAGoAZQBjAHQAAAAAAEgAEAABAEYAaQBsAGUARABlAHMAYwByAGkAcAB0AGkAbwBuAAAAAABHAHIAbwB3AGwALgBDAG8AbgBuAGUAYwB0AG8AcgAAADAACAABAEYAaQBsAGUAVgBlAHIAcwBpAG8AbgAAAAAAMgAuADAALgA0AC4AMQAAAEgAFAABAEkAbgB0AGUAcgBuAGEAbABOAGEAbQBlAAAARwByAG8AdwBsAC4AQwBvAG4AbgBlAGMAdABvAHIALgBkAGwAbAAAAHAAJgABAEwAZQBnAGEAbABDAG8AcAB5AHIAaQBnAGgAdAAAAEMAbwBwAHkAcgBpAGcAaAB0ACAAqQAgAGUAbABlAG0AZQBuAHQAIABjAG8AZABlACAAcAByAG8AagBlAGMAdAAgADIAMAAwADkAAABQABQAAQBPAHIAaQBnAGkAbgBhAGwARgBpAGwAZQBuAGEAbQBlAAAARwByAG8AdwBsAC4AQwBvAG4AbgBlAGMAdABvAHIALgBkAGwAbAAAAEAAEAABAFAAcgBvAGQAdQBjAHQATgBhAG0AZQAAAAAARwByAG8AdwBsAC4AQwBvAG4AbgBlAGMAdABvAHIAAAAwAAYAAQBQAHIAbwBkAHUAYwB0AFYAZQByAHMAaQBvAG4AAAAyAC4AMAAuADQAAAA4AAgAAQBBAHMAcwBlAG0AYgBsAHkAIABWAGUAcgBzAGkAbwBuAAAAMgAuADAALgAwAC4AMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0AAADAAAAAA7AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 }
 
-function test_call {
-  Set-CacheItem -Name "test" -Value "test"
+$test = @{
+  "Matthew" = "Tristan Arrington";
+  "Aaron" = "Amelia Goldan"
 }
 
-test_call
+$cache = Get-SecureCache -Passphrase ("123QWEasd" | ConvertTo-SecureString -AsPlainText -Force)
+$cache.setItem("Users", @("Matthew","Aubra","Adrian"), $null, $true, $true) | Out-Null
+
 #Get-CacheItem -Name "test"
 break
 
