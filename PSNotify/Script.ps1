@@ -1708,7 +1708,25 @@ function Set-CacheItem {
       return "_.clixml"
     }
 
-    function decrypt_string {
+    function decrypt_using_aesmanaged {
+      Param (
+        [byte[]]$data_to_decrypt,
+        [byte[]]$iv,
+        [byte[]]$key
+      )
+
+      [System.Security.Cryptography.AesManaged] $aes_managed = New-Object System.Security.Cryptography.AesManaged
+      $aes_managed.Key = $key
+      $aes_managed.IV = $iv
+      $aes_managed.Padding = [System.Security.Cryptography.PaddingMode]::ISO10126
+
+      $decryptor = $aes_managed.CreateDecryptor()
+
+      $memory_stream = New-Object System.IO.MemoryStream
+
+      #$crypto_stream = New-Object System.Security.Cryptography.CryptoStream $memory_stream, $encryptor, ([System.Security.Cryptography.CryptoStreamMode]::Write)
+      #$crypto_stream.Write($data_to_encrypt, 0, $data_to_encrypt.Length)
+
       <#
         try
         {
@@ -1728,13 +1746,31 @@ function Set-CacheItem {
       #>
     }
 
-    function encrypt_string {
+    function encrypt_using_aesmanaged {
       Param (
-        [string]$clear_text,
-        [string]$key
+        [byte[]]$data_to_encrypt,
+        [byte[]]$iv,
+        [byte[]]$key
       )
 
-      $Key = get_key
+      $aes_managed = New-Object System.Security.Cryptography.AesManaged
+      $aes_managed.Key = $key
+      $aes_managed.IV = $iv
+      $aes_managed.Padding = [System.Security.Cryptography.PaddingMode]::ISO10126
+
+      $encryptor = $aes_managed.CreateEncryptor()
+
+      $memory_stream = New-Object System.IO.MemoryStream
+
+      $crypto_stream = New-Object System.Security.Cryptography.CryptoStream $memory_stream, $encryptor, ([System.Security.Cryptography.CryptoStreamMode]::Write)
+      $crypto_stream.Write($data_to_encrypt, 0, $data_to_encrypt.Length)
+
+      $encrypted_data = $memory_stream.ToArray()
+
+      $memory_stream.Dispose()
+      $crypto_stream.Dispose()
+
+      return $encrypted_data
 
       <#
         try
