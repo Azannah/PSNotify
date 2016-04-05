@@ -2202,7 +2202,7 @@ function Get-SecureCache {
       # 2do validate $protector input
 
       $RNG = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
-      $cache = read_cache_file
+      $cache = read_cache_file $cache_path
 
       Export-ModuleMember -Function "setItem"
     }
@@ -2462,7 +2462,7 @@ $test = @{
   "Aaron" = "Amelia Goldan"
 }
 
-$cache = Get-SecureCache -Passphrase ("123QWEasd" | ConvertTo-SecureString -AsPlainText -Force)
+$cache = Get-SecureCache #-Passphrase ("123QWEasd" | ConvertTo-SecureString -AsPlainText -Force)
 $cache.setItem("Users", @("Matthew","Aubra","Adrian"), $null, $true, $false) | % { Write-Host "setItem('Users',...): $_ (should be true)" }
 $cache.setItem("Wives", $test, $null, $true, $true) | % { Write-Host "setItem('Wives',...): $_ (should be true)" }
 $cache.setItem("Wives", $test) | % { Write-Host "setItem('Wives',...) no overwrite: $_ (should be false)" }
