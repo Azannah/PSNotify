@@ -1867,6 +1867,18 @@ function Get-SecureCache {
         #>
       }
 
+      function decrypt_using_dpapi {
+        Param (
+          [byte[]]$data_to_decrypt,
+          [byte[]]$iv,
+          [System.Security.Cryptography.DataProtectionScope]$scope
+        )
+
+        [byte[]]$decrypted_data = [System.Security.Cryptography.ProtectedData]::Unprotect($data_to_decrypt, $iv, $scope)
+
+        return $decrypted_data
+      }
+
       function encrypt_using_aesmanaged {
         Param (
           [byte[]]$data_to_encrypt,
@@ -1943,10 +1955,11 @@ function Get-SecureCache {
       function encrypt_using_dpapi {
         Param (
           [byte[]]$data_to_encrypt,
+          [byte[]]$iv,
           [System.Security.Cryptography.DataProtectionScope]$scope
         )
 
-        [byte[]]$encrypted_data = [System.Security.Cryptography.ProtectedData]::Protect($data_to_encrypt, (get_random_bytes 32), $scope)
+        [byte[]]$encrypted_data = [System.Security.Cryptography.ProtectedData]::Protect($data_to_encrypt, $iv, $scope)
 
         return $encrypted_data
       }
@@ -2036,16 +2049,15 @@ function Get-SecureCache {
           # DPAPI
           if (($passphrase_protector -eq $null) -and ([string]::IsNullOrWhiteSpace($cert_protector))) {
             # Encrypt the cache master key using the Data Protection API and store under the user
-            $encrypted_master_key = encrypt_using_dpapi $master_key ([System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+            $data_iv = get_random_bytes 16
+            $encrypted_master_key = encrypt_using_dpapi $master_key $data_iv ([System.Security.Cryptography.DataProtectionScope]::CurrentUser)
           
             $cache[$keys][$user_sid]["dpapi"] = @{
               Data = [System.Convert]::ToBase64String($encrypted_master_key);
-              #IV = dpapi uses an IV during encryption, but must store it with the data because you don't need to provide the salt to decrypt the data...
+              IV = [System.Convert]::ToBase64String($data_iv);
               Timestamp = Get-Date;
             }
 
-            [array]::Clear($encrypted_master_key)
-        
           # Certificate
           } elseif (-not [string]::IsNullOrWhiteSpace($cert_protector)) {
             # 2do
@@ -2064,6 +2076,7 @@ function Get-SecureCache {
             }
           }
 
+          [array]::Clear($encrypted_master_key)
           return $master_key
         }
 
@@ -2076,7 +2089,34 @@ function Get-SecureCache {
         if ((-not [string]::IsNullOrWhiteSpace($cert_protector)) -and ($cache[$keys][$user_sid].Keys -contains 'cert')) {
           # 2do
 
-        } elseif ( #HERE ) {}
+        # If no certificate is provided, a passphrase is the next preference
+        } elseif ((-not [string]::IsNullOrWhiteSpace($passphrase_protector)) -and ($cache[$keys][$user_sid].Keys -contains 'passphrase')) {
+          # Attempt to load required passphrase protector elements. If we're unsuccessful, try to fallback on the DPAPI
+          try {
+            $salt = [System.Convert]::FromBase64String($cache[$keys][$user_sid]['passphrase'].Salt)
+            $iv = [System.Convert]::FromBase64String($cache[$keys][$user_sid]['passphrase'].IV)
+            $encrypted_master_key = [System.Convert]::FromBase64String($cache[$keys][$user_sid]['passphrase'].Data)
+
+            $master_key = decrypt_using_aesmanaged $encrypted_master_key $iv (get_derived_key $passphrase_protector $salt)
+          } catch {
+            # 2do: log
+            # passphrase protector data elements incorrect, attempt to fall back on DPAPI
+            return get_key
+          }
+        
+        # If no certificate thumbprint or passphrase is provided, attempt to obtain the master key using DPAPI
+        } else {
+          # Attempt to load required passphrase protector elements.
+          try {
+            $iv = [System.Convert]::FromBase64String($cache[$keys][$user_sid]['dpapi'].IV)
+            $encrypted_master_key = [System.Convert]::FromBase64String($cache[$keys][$user_sid]['dpapi'].Data)
+
+            $master_key = decrypt_using_dpapi $encrypted_master_key $iv ([System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+          } catch {
+            # 2do: log
+            throw [System.Security.Cryptography.CryptographicException] "Invalid key protector elements in cache. Unable to decrypt the cache key."
+          }
+        }
 
         <#switch ($key_protector) {
           {$_.GetType() -eq [string]} {
@@ -2423,7 +2463,9 @@ $test = @{
 }
 
 $cache = Get-SecureCache -Passphrase ("123QWEasd" | ConvertTo-SecureString -AsPlainText -Force)
-$cache.setItem("Users", @("Matthew","Aubra","Adrian"), $null, $true, $true) | Out-Null
+$cache.setItem("Users", @("Matthew","Aubra","Adrian"), $null, $true, $false) | % { Write-Host "setItem('Users',...): $_ (should be true)" }
+$cache.setItem("Wives", $test, $null, $true, $true) | % { Write-Host "setItem('Wives',...): $_ (should be true)" }
+$cache.setItem("Wives", $test) | % { Write-Host "setItem('Wives',...) no overwrite: $_ (should be false)" }
 
 #Get-CacheItem -Name "test"
 break
