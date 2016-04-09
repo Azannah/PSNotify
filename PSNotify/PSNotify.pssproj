@@ -28,13 +28,19 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="ADLDAP.psm1" />
     <Compile Include="growl\Growl.Connector.dll" />
     <Compile Include="growl\Growl.CoreLibrary.dll" />
+    <Compile Include="Notification.psm1" />
+    <Compile Include="PowerShellTest1.tests.ps1" />
     <Compile Include="Script.clixml" />
     <Compile Include="Script.ps1" />
+    <Compile Include="SecureCache.psm1" />
+    <Compile Include="SplunkAlerts.psm1" />
     <Compile Include="templates\group membership changed %28high%29_brief.txt" />
     <Compile Include="templates\group membership changed %28high%29_standard.txt" />
     <Compile Include="templates\name _with_ illegal _ chars _.txt" />
+    <Compile Include="Tokens.psm1" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="growl\" />
