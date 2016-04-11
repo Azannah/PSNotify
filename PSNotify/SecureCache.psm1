@@ -580,7 +580,7 @@ function Get-SecureCache {
 
           try {
 
-            "$ENV:COMPUTERNAME:$PID" | Out-File -FilePath "$_CACHE_PATH.lock" -NoClobber -ErrorAction Stop
+            "$ENV:COMPUTERNAME`:$PID`:$_INSTANCE_ID" | Out-File -FilePath "$_CACHE_PATH.lock" -NoClobber -ErrorAction Stop
 
             # Lock file created
             break
@@ -588,7 +588,7 @@ function Get-SecureCache {
           # If the lock file can't be created, wait a randon interval and try again
           } catch {
 
-            #We're not going to wait more than 3 seconds for the lock to be cleared
+            #We're not going to wait more than 3 seconds for any existing lock to be cleared
             if ($total_wait_ms -gt (3*1000)) {
 
               # Find out what process has the file locked
@@ -596,25 +596,23 @@ function Get-SecureCache {
 
                 $lock_owner = Get-Content "$_CACHE_PATH.lock" -Tail 1
 
-              # We weren't able to read the lcok file for some reason...
+              # We weren't able to read the lock file for some reason...
               } catch {
 
-                #2do: See if another exception makes sense
-                throw [System.AccessViolationException] "The secure cache file $_CACHE_PATH is locked by 'unknown'"
+                throw [System.IO.IOException] "The secure cache file $_CACHE_PATH is locked by 'unknown'"
 
               }
 
-              #2do: See if another exception makes sense
-              throw [System.AccessViolationException] "The secure cache file $_CACHE_PATH is locked by $lock_owner"
+              throw [System.IO.IOException] "The secure cache file $_CACHE_PATH is locked by $lock_owner"
             }
             
             # A lock file already exists, so we're going to get a random number representing milliseconds...
-            # 2do: figure out how to convert a byte array into an int
-            $wait_ms = Get-Random -SetSeed (get_random_bytes -byte_count 1) -Minimum 100 -Maximum 300
+            $wait_ms = Get-Random -SetSeed ([System.BitConverter]::ToInt32((get_random_bytes -byte_count 4),0)) -Minimum 100 -Maximum 300
 
             # ... and wait for that amount of time
             Start-Sleep -Milliseconds $wait_ms
 
+            # We don't want to wait forever
             $total_wait_ms += $wait_ms
 
             # After our wait, we'll try to create the lock again
@@ -626,7 +624,7 @@ function Get-SecureCache {
 
         }
 
-
+        # Okay, so now we have a lock on the file - Now lets merge
         try {
           Export-Clixml -Path $cache_path -InputObject $cache_object -Depth 10 -ErrorAction Stop
         } catch {
@@ -693,6 +691,10 @@ function Get-SecureCache {
       # 2do validate $protector input
 
       $RNG = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+      
+      # Used to uniquely identify this instance if multiple instances are accessing the same cache file within the same script
+      $_INSTANCE_ID = [System.BitConverter]::ToInt32((get_random_bytes 4),0)
+      
       $_CACHE_PATH = $cache_path
       $_CACHE = read_cache_file $cache_path
       [byte[]]$_CACHE_KEY = $null # 2do: change all private object (class?) variables to follow the same format
