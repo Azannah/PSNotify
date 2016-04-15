@@ -13,7 +13,7 @@ The block of text that contains text and tokens to be replaced.
 .PARAMETER tokens
 Token name/value hashtable.
 .EXAMPLE
- $content = Get-Content .\template.txt | Merge-Tokens -tokens @{FirstName: 'foo'; LastName: 'bar'}
+ $content = Get-Content .\template.txt | Merge-Tokens -tokens @{FirstName = 'foo'; LastName = 'bar'}
 Pass template to function via pipeline.
 .NOTES
   Original source: https://github.com/craibuc/PsTokens/blob/master/Merge-Tokens.ps1

@@ -35,6 +35,7 @@
     <Compile Include="PowerShellTest1.tests.ps1" />
     <Compile Include="Script.clixml" />
     <Compile Include="Script.ps1" />
+    <Compile Include="SecureCache - backup.psm1" />
     <Compile Include="SecureCache.psm1" />
     <Compile Include="SplunkAlerts.psm1" />
     <Compile Include="templates\group membership changed %28high%29_brief.txt" />

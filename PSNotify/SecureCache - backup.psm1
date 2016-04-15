@@ -2,229 +2,6 @@
 # SecureCache.psm1
 #
 
-function Get-DerivedKey {
-  [CmdletBinding()]
-  Param(
-    [Parameter(
-      HelpMessage="What passphrase should be used to derive a strong key (the more complex, the better)?",
-      Mandatory=$true,
-      Position=0,
-      ValueFromPipeline=$false,
-      ValueFromPipelineByPropertyName=$true,
-      ValueFromRemainingArguments=$false)]
-    [Alias('Password')]
-    [securestring]
-    # A passphrase along with a Salt is used to derive the secure key.
-    $Passphrase,
-    [Parameter(
-      #HelpMessage="Specify the name of a computer to send messages to a remote system",
-      Mandatory=$false,
-      #ParameterSetName="remote",
-      #Position=0,
-      ValueFromPipeline=$true,
-      ValueFromPipelineByPropertyName=$true,
-      ValueFromRemainingArguments=$false)]
-    #[Alias('Target')]
-    [securestring]
-    # A path to the cache file that shuold be loaded
-    $Salt
-  )
-
-  $iterations = 1000
-  $key_bytes = 32
-
-  try {
-    $generator = New-Object System.Security.Cryptography.Rfc2898DeriveBytes (get_unsecured_byte_string $password), $salt, $iterations
-  } catch {
-    # 2do Log
-    throw $_
-  }
-
-  return $generator.GetBytes($key_bytes)
-
-}
-
-function New-Protector {
-  [CmdletBinding(DefaultParameterSetName="DPAPI")]
-  Param(
-    [Parameter(
-      HelpMessage="Provide an AES encryption key",
-      Mandatory=$false,
-      ParameterSetName="AES",
-      #Position=0,
-      ValueFromPipeline=$true,
-      ValueFromPipelineByPropertyName=$false,
-      ValueFromRemainingArguments=$false)]
-    [Alias('Key')]
-    [securestring]
-    # A path to the cache file that shuold be loaded
-    $EncryptionKey = $null,
-    [Parameter(
-      HelpMessage="Optionally, provide an initial nonce (initialization vector) manually",
-      Mandatory=$false,
-      ParameterSetName="AES",
-      #Position=0,
-      ValueFromPipeline=$false,
-      ValueFromPipelineByPropertyName=$true,
-      ValueFromRemainingArguments=$false)]
-    [Alias('IV','InitialIV')]
-    [Object]
-    <# 
-    The nonce (initialization vector) is a random number or byte array used along with the encryption key to provide entropy. Each nonce should be unique to the protected data, and the same nonce must be supplied for encryption and decryption.
-
-    Use this parameter to supply the nonce that will be used in the next encryption or decryption operation. The nonce is randomized after being retrieved for subsequent encryption/decryption operations.
-    #>
-    $InitialNonce = $null,
-    [Parameter(
-      HelpMessage="Optionally, provide an initial nonce (initialization vector) manually",
-      Mandatory=$true,
-      ParameterSetName="x509",
-      #Position=0,
-      ValueFromPipeline=$false,
-      ValueFromPipelineByPropertyName=$true,
-      ValueFromRemainingArguments=$false)]
-    [Alias('x509','Cert','CertThumbprint','x509Thumbprint')]
-    [Object]
-    # Provide a string representing the thumbprint of an x509 certificate available in the local Windows keystore that can be used for public key crypto
-    $Certificate
-  )
-
-  $Script:protector_template = {
-    # There are three methdods that can be used to protect data: AES encryption, PKI encryption, and Microsoft's Data Protection API (which is really just AES)
-    # Indicate here which method we're using.
-    $protection_method = $PSCmdlet.ParameterSetName
-
-    $this | Add-Member -MemberType ScriptProperty -Name ProtectorType -Value {
-      return $protection_method
-    }
-
-    # AES encryption requires an encryption key as well as a nonce for added entropy.
-    # The key can be 128, 192, 256 bits long, but this script requres a 256 bit key. The key can be re-used to encrypt multiple items
-    $aes_key = $EncryptionKey
-    
-    $this | Add-Member -MemberType ScriptProperty -Name EncryptionKey -Value {
-      return $aes_key
-    }
-
-    #Unlike the encryption key, the nonce should be unique to each encrypted item. It should be 128 bits (16 bytes)
-    $aes_nonce = $null           # Changes with each query of the nonce
-    $last_aes_nonce = $null      # Used to store the last nonce queried
-    if (($PSCmdlet.ParameterSetName -eq "AES") -and ($InitialNonce -eq $null)) {
-      $aes_nonce = Get-RandomByteArray -Size 16
-    } elseif ($PSCmdlet.ParameterSetName -eq "AES") {
-      #The input of InitialNonce can be a 16 byte array or an int16
-      if (($InitialNonce.GetType().Name -like "byte[]") -and ($InitialNonce.Length -ne 16)) {
-        throw [System.ArgumentException] "InitialNonce must be specified as a 128 bit (16 bytes) array of type Byte[]"
-      } else {
-        # This will throw an exception if the value can't be converted
-        $aes_nonce = [byte[]][System.BitConverter]::GetBytes([System.Convert]::ToInt16($InitialNonce))
-
-        # Display a warning if the nonce is weak (less than 16 bytes), but continue
-        if ($aes_key.Length -lt 16) {
-          Write-Warning "A weak nonce has been supplied. For the best encryption results, use a nonce 16 bytes in length"
-        }
-      }
-    }
-
-    $this | Add-Member -MemberType ScriptProperty -Name Nonce -Value {
-      $last_aes_nonce = $aes_nonce
-      $aes_nonce = Get-RandomByteArray -Size 16
-      return $last_aes_nonce
-    }
-
-    $this | Add-Member -MemberType ScriptProperty -Name LastNonce -Value {
-      return $last_aes_nonce
-    }
-
-    # x509 certificate encryption
-    # Certificates are identified by their thumbprint or provided directly. If an x509 thumbprint is provided, look for the certificate in the 
-    # Windows certificate store Certificates can have a public key, or a public + private key. If the private key is used to encrypt data, 
-    # only the public key can unlock it. Conversely, if the public key is used to encrypt data, only the private key can decrypt it.
-    $x509_cert = $null
-    if ($PSCmdlet.ParameterSetName -match "x509") {
-      # Test the object to see if it's a thumbprint (string object), or a certificate (X509Certificate2 object)
-      switch ($Certificate.GetType()) {
-        {$_ -like "String"} {
-          # We have a thumbprint, so we need to search certificate containers in the following order My, TrustedPeople, then everywhere of the CurrentUser and LocalMachine store
-          $discovered_certs = @()
-          $discovered_certs += "CurrentUser", "LocalMachine" | %{
-            $search_context = $_
-            "My", "TrustedPeople" | % { Get-Item "Cert:\$search_context\$_\$Certificate" -ErrorAction Ignore }
-          }
-
-          # If $discovered_certs = 0, we havn't found a matching certificate already. Expand our search to all stored certificates
-          $discovered_certs += Get-ChildItem "Cert:\$Certificate" -Recurse
-
-          # If not certificates were discovered, throw an exception
-          if ($discovered_certs.Count -eq 0) {
-            throw [System.ArgumentException] "No certificates were discovered using the provided thumbprint: $Certificate"
-          }
-
-          # If multiple certificates were discovered, use the first match with a private key. If not private key is found, use the first match
-          $x509_cert = $discovered_certs[0]
-          $discovered_certs | ? {$_.HasPrivateKey} | % {
-            $x509_cert = $_
-            break
-          }
-
-          # Break the switch statement
-          break
-        }
-
-        {$_ -match "X509Certificate"} {
-          # We were passed an x509 certificate, so our work is over
-          $x509_cert = $Certificate
-
-          # Break the switch statement
-          break
-        }
-
-        default {
-          # We were passed some kind of unknown, so throw an exception
-          throw [System.ArgumentException] "The value provided for Certificate must be a string or X509Certificate object"
-        }
-      }
-
-    }
-
-    $this | Add-Member -MemberType ScriptProperty -Name Certificate -Value {
-      return $x509_cert
-    }
-
-    function GetKey()
-  }
-}
-
-$_Get_RandomByte_RNG = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
-
-function Get-RandomByteArray {
-  [CmdletBinding()]
-  Param(
-    [Parameter(
-      HelpMessage="How many random bytes should the array contain?",
-      Mandatory=$true,
-      Position=0,
-      ValueFromPipeline=$true,
-      ValueFromPipelineByPropertyName=$true,
-      ValueFromRemainingArguments=$false)]
-    [int]
-    # Specify the number of random bytes in the returned array.
-    $Size
-  )
-
-  Process {
-
-    $buffer = New-Object byte[]($Size)
-
-    # I've read several references to wanting to use the same RNG instance repeatedly
-    #[System.Security.Cryptography.RNGCryptoServiceProvider]::Create().GetBytes($random_bytes)
-    $_Get_RandomByte_RNG.GetBytes($buffer)
-
-    return $buffer
-
-  }
-}
-
 function Get-SecureCache {
   [CmdletBinding()]
   Param(
@@ -370,7 +147,7 @@ function Get-SecureCache {
             $old_value = $_CACHE[$namespace][$name]
           }
 
-          $data_iv = Get-RandomByteArray -Size 16
+          $data_iv = get_random_bytes 16
 
           try {
             $encrypted_serialized_object = encrypt_using_aesmanaged (
@@ -556,7 +333,7 @@ function Get-SecureCache {
         return $encrypted_data
       }
 
-      <#function get_random_bytes {
+      function get_random_bytes {
         Param (
           [int]$byte_count
         )
@@ -568,7 +345,7 @@ function Get-SecureCache {
         $RNG.GetBytes($buffer)
 
         return $buffer
-      }#>
+      }
 
       function get_unsecured_byte_string {
         Param (
@@ -637,8 +414,8 @@ function Get-SecureCache {
         if ($_CACHE.Keys -notcontains $keys) {
           # The cache must be new (or broken), so create a new master key which will be used to encrypt everything
           $master_key = get_derived_key (
-            [System.Text.UnicodeEncoding]::ASCII.GetString((Get-RandomByteArray -Size 51)) | ConvertTo-SecureString -AsPlainText -Force
-          ) (Get-RandomByteArray -Size 32)
+            [System.Text.UnicodeEncoding]::ASCII.GetString((get_random_bytes 51)) | ConvertTo-SecureString -AsPlainText -Force
+          ) (get_random_bytes 32)
 
           # Prime the cache with the appropriate hashtables - $keys namespace, and initial user
           $_CACHE[$keys] = @{}
@@ -650,7 +427,7 @@ function Get-SecureCache {
           # DPAPI
           if (($passphrase_protector -eq $null) -and ([string]::IsNullOrWhiteSpace($cert_protector))) {
             # Encrypt the cache master key using the Data Protection API and store under the user
-            $data_iv = Get-RandomByteArray -Size 16
+            $data_iv = get_random_bytes 16
             [byte[]]$encrypted_master_key = encrypt_using_dpapi $master_key $data_iv ([System.Security.Cryptography.DataProtectionScope]::CurrentUser)
           
             $_CACHE[$keys][$user_sid]["dpapi"] = @{
@@ -665,8 +442,8 @@ function Get-SecureCache {
 
           # Passphrase
           } else {
-            $passphrase_salt = Get-RandomByteArray -Size 32
-            $data_iv = Get-RandomByteArray -Size 16
+            $passphrase_salt = get_random_bytes 32
+            $data_iv = get_random_bytes 16
             $encrypted_master_key = encrypt_using_aesmanaged $master_key $data_iv (get_derived_key $passphrase_protector $passphrase_salt)
 
             $_CACHE[$keys][$user_sid]["passphrase"] = @{
@@ -775,7 +552,7 @@ function Get-SecureCache {
             }
             
             # A lock file already exists, so we're going to get a random number representing milliseconds...
-            $wait_ms = Get-Random -SetSeed ([System.BitConverter]::ToInt32((Get-RandomByteArray -Size 4),0)) -Minimum 100 -Maximum 300
+            $wait_ms = Get-Random -SetSeed ([System.BitConverter]::ToInt32((get_random_bytes -byte_count 4),0)) -Minimum 100 -Maximum 300
 
             # ... and wait for that amount of time
             Start-Sleep -Milliseconds $wait_ms
@@ -875,10 +652,10 @@ function Get-SecureCache {
 
       # 2do validate $protector input
 
-      #$RNG = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+      $RNG = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
       
       # Used to uniquely identify this instance if multiple instances are accessing the same cache file within the same script
-      $_INSTANCE_ID = [System.BitConverter]::ToInt32((Get-RandomByteArray -Size 4),0)
+      $_INSTANCE_ID = [System.BitConverter]::ToInt32((get_random_bytes 4),0)
       
       [securestring]$_CACHE_KEY_PROTECTOR = $protector
       $_CACHE_PATH = $cache_path
