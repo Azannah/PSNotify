@@ -32,9 +32,10 @@
     <Compile Include="growl\Growl.Connector.dll" />
     <Compile Include="growl\Growl.CoreLibrary.dll" />
     <Compile Include="Notification.psm1" />
-    <Compile Include="PowerShellTest1.tests.ps1" />
+    <Compile Include="SecureCache.tests.ps1" />
     <Compile Include="Script.clixml" />
     <Compile Include="Script.ps1" />
+    <Compile Include="EmbeddedResources.psm1" />
     <Compile Include="SecureCache - backup.psm1" />
     <Compile Include="SecureCache.psm1" />
     <Compile Include="SplunkAlerts.psm1" />
