@@ -1530,18 +1530,19 @@ function Protect-Data {
 
     switch ($OutputEncoding) {
       {$_ -match "Base64String"} {
-        $encrypted_base64_object = [System.Convert]::ToBase64String($encrypted_serialized_object)
-        return $encrypted_base64_object
+        $return_object = [System.Convert]::ToBase64String($encrypted_serialized_object)
+        #return $encrypted_base64_object
       }
 
       {$_ -match "Bytes"} {
-        return $encrypted_serialized_object
+        #return $encrypted_serialized_object
+        $return_object = $encrypted_serialized_object
       }
     }
 
   }
 
-  End {  }
+  End { return $return_object }
 }
 
 function ConvertTo-SerializedObject {
