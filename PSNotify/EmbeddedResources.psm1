@@ -2,7 +2,7 @@
 # EmbeddedResources.psm1
 #
 
-function Load-Assembly {
+function Import-Assembly {
 <#
 .SYNOPSIS
 Loads the specified assembly into the current application domain after checking to make sure the assembly isn't already loaded (based on file name). If the 
@@ -18,12 +18,12 @@ https://msdn.microsoft.com/en-us/library/dd153782(v=vs.110).aspx#avoid_loading_m
 .EXAMPLE
 The following example loads a DLL file from specified path:
 
-Script:Load-Assembly -Path "C:\Program Files\My Application\mylibrary.subnamespace.dll"
+Script:Import-Assembly -Path "C:\Program Files\My Application\mylibrary.subnamespace.dll"
 
 .EXAMPLE
 This example accepts System.IO.FileInfo objects from the pipe and attempts to load them as assemblies:
 
-Get-ChildItem -Filter *.dll | Script:Load-Assembly
+Get-ChildItem -Filter *.dll | Script:Import-Assembly
 
 .INPUTS
 This function accepts string objects as well as any object that defines a FullName property that can be cast as a string (System.IO.FileInfo, for example)
@@ -159,6 +159,6 @@ function Write-EmbeddedResource {
 }
 
 Export-ModuleMember -Function @(
-  "Load-Assembly",
+  "Import-Assembly",
   "Write-EmbeddedResource"
 )
