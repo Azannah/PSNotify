@@ -39,6 +39,188 @@ $Script:resources = $null
 # This variable provides a default salt when none is provided as input. It's provided here as a module global so that it's easy to change
 $_Default_Salt = [System.Text.ASCIIEncoding]::ASCII.GetBytes("Weak Sauce!")
 
+$Script:protector_template = {
+  Param(
+    [object]$EncryptionKey = $null,
+    [object]$InitialNonce = $null,
+    [Object]$Certificate = $null
+  )
+
+  # There are three methdods that can be used to protect data: AES encryption, PKI encryption, and Microsoft's Data Protection API (which is really just AES)
+  # Indicate here which method we're using.
+  if ($Certificate -ne $null) {
+    $protection_method = "x509"
+  } elseif ($EncryptionKey -ne $null) {
+    $protection_method = "AES"
+  } else {
+    $protection_method = "DPAPI"
+  }
+
+  function GetProtectorType {
+    return $protection_method
+  }
+
+  ## The following cannot be exposed using Export-ModuleMember
+  #New-DynamicVariable -Name "ProtectorType2" -Getter { return "cats" } -Context $ExecutionContext.SessionState.PSVariable
+      
+  # AES encryption requires an encryption key as well as a nonce for added entropy.
+  # The key can be 128, 192, 256 bits long, but this script requres a 256 bit key. The key can be re-used to encrypt multiple items
+  [Byte[]]$aes_key = [Byte[]](Get-UnsecuredBytes -InputObject $EncryptionKey)
+
+  function GetSymmetricKey {
+    return $aes_key
+  }
+    
+  # Unlike the encryption key, the nonce should be unique to each encrypted item. It should be 128 bits (16 bytes)
+  $aes_nonce = $null           # Changes with each query of the nonce
+  $last_aes_nonce = $null      # Used to store the last nonce queried
+  if ($InitialNonce -eq $null) { Write-Host "Fuck "}
+  if ($protection_method -like "AES") { Write-Host "Fuck "}
+  if (($protection_method -like "AES") -and ($InitialNonce -eq $null)) {
+    $aes_nonce = Get-RandomByteArray -Size 16
+  } elseif ($protection_method -eq "AES") {
+    #The input of InitialNonce can be a 16 byte array or an int16
+    if (($InitialNonce.GetType().Name -like "byte[]") -and ($InitialNonce.Length -ne 16)) {
+      throw [System.ArgumentException] "InitialNonce must be specified as a 128 bit (16 bytes) array of type Byte[]"
+    } else {
+      # This will throw an exception if the value can't be converted
+      $aes_nonce = [byte[]][System.BitConverter]::GetBytes([System.Convert]::ToInt16($InitialNonce))
+
+      # Display a warning if the nonce is weak (less than 16 bytes), but continue
+      if ($aes_key.Length -lt 16) {
+        Write-Warning "A weak nonce has been supplied. For the best encryption results, use a nonce 16 bytes in length"
+      }
+    }
+  }
+
+  function GetNonce {
+    $last_aes_nonce = $aes_nonce
+    $aes_nonce = Get-RandomByteArray -Size 16
+    return $last_aes_nonce
+  }
+
+  function GetLastNonce {
+    return $last_aes_nonce
+  }
+
+  # x509 certificate encryption
+  # Certificates are identified by their thumbprint or provided directly. If an x509 thumbprint is provided, look for the certificate in the 
+  # Windows certificate store Certificates can have a public key, or a public + private key. If the private key is used to encrypt data, 
+  # only the public key can unlock it. Conversely, if the public key is used to encrypt data, only the private key can decrypt it.
+  $x509_cert = $null
+  if ($PSCmdlet.ParameterSetName -match "x509") {
+    # Test the object to see if it's a thumbprint (string object), or a certificate (X509Certificate2 object)
+    switch ($Certificate.GetType()) {
+      {$_ -like "String"} {
+        # We have a thumbprint, so we need to search certificate containers in the following order My, TrustedPeople, then everywhere of the CurrentUser and LocalMachine store
+        $discovered_certs = @()
+        $discovered_certs += "CurrentUser", "LocalMachine" | %{
+          $search_context = $_
+          "My", "TrustedPeople" | % { Get-Item "Cert:\$search_context\$_\$Certificate" -ErrorAction Ignore }
+        }
+
+        # If $discovered_certs = 0, we havn't found a matching certificate already. Expand our search to all stored certificates
+        $discovered_certs += Get-ChildItem "Cert:\$Certificate" -Recurse
+
+        # If not certificates were discovered, throw an exception
+        if ($discovered_certs.Count -eq 0) {
+          throw [System.ArgumentException] "No certificates were discovered using the provided thumbprint: $Certificate"
+        }
+
+        # If multiple certificates were discovered, use the first match with a private key. If not private key is found, use the first match
+        $x509_cert = $discovered_certs[0]
+        $discovered_certs | ? {$_.HasPrivateKey} | % {
+          $x509_cert = $_
+          break
+        }
+
+        # Break the switch statement
+        break
+      }
+
+      {$_ -match "X509Certificate2"} {
+        # We were passed an x509 certificate, so our work is over
+        $x509_cert = $Certificate
+
+        # Break the switch statement
+        break
+      }
+
+      default {
+        # We were passed some kind of unknown, so throw an exception
+        throw [System.ArgumentException] "The value provided for Certificate must be a string or X509Certificate2 object"
+      }
+    }
+
+  }
+
+  # Returns the certificate without a private key (if one exists)
+  function GetCertificate {
+
+    if ($x509_cert -eq $null) {
+      return $null
+    }
+
+    # If the certificate has a private key...
+    if ($x509_cert.HasPrivateKey) {
+          
+      # ...create an in-memory copy without exporting the private key
+      return (New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(,$x509_cert.Export("Cert")))
+    }
+
+    # If no private key exists, just return the certificate
+    return $x509_cert
+  }
+
+  function GetPrivateKey {      
+    if ($x509_cert -eq $null) {
+      return $null
+    }
+
+    $private_key = $null
+
+    # Check to see if we're working with a CNG key
+    if ([Security.Cryptography.X509Certificates.X509CertificateExtensionMethods]::HasCngKey($x509_cert)) {
+      # We are working with a CNG key
+      $cng_key = [Security.Cryptography.X509Certificates.X509Certificate2ExtensionMethods]::GetCngPrivateKey($x509_cert)
+
+      # Check the algorithm
+      if ($cng_key.Algorithm -like "RSA") {
+        $private_key = New-Object System.Security.Cryptography.RSACng($cng_key)
+      }
+
+      # 2do: Add support for alternate algorithms
+      
+    # If there is no CNG key, check to see if we have a private key managed by the legacy storage provider
+    } elseif ($x509_cert.HasPrivateKey) {
+      $private_key = $x509_cert.PrivateKey
+    }
+
+    return $private_key
+  }
+
+  function GetPublicKey () {
+    if ($x509_cert -eq $null) {
+      return $null
+    }
+
+    return $x509_cert.PublicKey.Key
+  }
+    
+  Export-ModuleMember -Function @(
+    "GetPrivateKey",
+    "GetPublicKey", 
+    "GetProtectorType",
+    "GetSymmetricKey",
+    "GetNonce",
+    "GetLastNonce",
+    "GetCertificate",
+    "GetPrivateKey",
+    "GetPublicKey"
+  )
+}
+
+
 <#
 function New-DynamicVariable {
   ##############################################################################
@@ -190,26 +372,27 @@ function Get-DerivedKey {
 
     [Parameter(
       #HelpMessage="Specify the name of a computer to send messages to a remote system",
-      Mandatory=$false,
+      Mandatory=$true,
       #ParameterSetName="remote",
       #Position=0,
       ValueFromPipeline=$true,
       ValueFromPipelineByPropertyName=$true,
       ValueFromRemainingArguments=$false)]
     #[Alias('Target')]
-    [ValidateScript({($_ -eq $null) -or ($_.GetType().Name -in "Byte[]", "SecureString")})]
+    #[ValidateScript({($_ -eq $null) -or ($_.GetType().Name -in "Byte[]", "SecureString")})]
     [object]
     # A path to the cache file that shuold be loaded
     $Salt
   )
 
+  if ($Salt.GetType().Name -notin "Byte[]", "SecureString") {
+    throw [System.ArgumentException] "The salt must be provided as a SecureString or byte array"
+  }
+
   $iterations = 10000
   $key_bytes = 32
 
-  if ($Salt -ne $null ) {
-    Write-Host ("Fail Here: " + $Salt.GetType().Name)
-    $Salt = Get-UnsecuredBytes -InputObject $Salt
-  }
+  $Salt = Get-UnsecuredBytes -InputObject $Salt
 
   try {
     $generator = New-Object System.Security.Cryptography.Rfc2898DeriveBytes (Get-UnsecuredBytes -InputObject $Passphrase), $Salt, $iterations
@@ -225,18 +408,17 @@ function Get-DerivedKey {
 # Old Name: Get-UnsecuredByteString
 function Get-UnsecuredBytes {
   Param (
-    [ValidateScript({$_ -ne $null})]
+    #[ValidateScript({$_ -ne $null})]
     [object]$InputObject
   )
 
   switch ($InputObject.GetType().Name) {
-    {$_ -match "Object\[\]"} {
-      # Because of how PowerShell works, a byte array will come through as a generic object array. Attempt to cast.
+    
+    {$_ -match "(Object|Byte)\[\]"} {
+      # Because of how PowerShell works, a byte array might come through as a generic object array. Attempt to cast.
       try {
         # If it works, we're good to go
-        $test = $InputObject | % {$_} | % { Write-Host ">>$_<<"; [byte]$_ }
-        Write-Host "Past"
-        $byte_string = [byte[]]$test
+        $byte_string = [byte[]]$InputObject
       } catch {
         # If it doesn't work, fail!
         throw [System.ArgumentException] "The object of type $($InputObject.GetType().Name) cannot be converted to a byte array (Byte[])"
@@ -310,7 +492,7 @@ function New-Protector {
       ValueFromPipeline=$false,
       ValueFromPipelineByPropertyName=$false,
       ValueFromRemainingArguments=$false)]
-    [ValidateScript({$_.GetType().Name -in "Byte[]", "SecureString"})]
+    #[ValidateScript({$_.GetType().Name -in "Byte[]", "SecureString"})]
     [Alias('Key')]
     [object]
     # An AES encryption key provided as a securestring or byte array
@@ -358,10 +540,13 @@ function New-Protector {
 
   Begin {
 
+    #({$_.GetType().Name -in "Byte[]", "SecureString"})
+
+    <#
     $Script:protector_template = {
       Param(
-        [ValidateScript({$_.GetType().Name -in "Byte[]", "SecureString"})][object]$EncryptionKey = $null,
-        [Object]$InitialNonce = $null,
+        [object]$EncryptionKey = $null,
+        [object]$InitialNonce = $null,
         [Object]$Certificate = $null
       )
 
@@ -536,7 +721,7 @@ function New-Protector {
         "GetPublicKey"
       )
     }
-  
+    #>
   }
 
   Process {
@@ -547,7 +732,6 @@ function New-Protector {
 
         # ...If not, use the _Default_Salt to derive a new salt based on the passphrase and bitwise operations
         $circular = 0
-        Write-Host ("HERE: " + $Passphrase.Length)
         $banded_bytes = [byte[]](Get-UnsecuredBytes -InputObject $Passphrase | %{
           
           [byte] $buffer = $_ -band $_Default_Salt[$circular]
@@ -571,7 +755,7 @@ function New-Protector {
 
       }
 
-      $EncryptionKey = Get-DerivedKey -Passphrase $Passphrase -Salt (,$Salt)
+      $EncryptionKey = Get-DerivedKey -Passphrase $Passphrase -Salt $Salt
     }
 
     $protector = New-Module $Script:protector_template -AsCustomObject -ArgumentList $EncryptionKey, $InitialNonce, $Certificate
@@ -1369,5 +1553,8 @@ function Get-SecureCache {
 Export-ModuleMember -Function @(
   "Get-SecureCache",
   "New-Protector",
-  "New-DynamicVariable"
+  "New-DynamicVariable",
+  "Get-RandomByteArray",
+  "Get-UnsecuredBytes",
+  "Get-DerivedKey"
 )

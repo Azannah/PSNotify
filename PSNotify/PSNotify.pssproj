@@ -43,6 +43,7 @@
     <Compile Include="templates\group membership changed %28high%29_standard.txt" />
     <Compile Include="templates\name _with_ illegal _ chars _.txt" />
     <Compile Include="Tokens.psm1" />
+    <Compile Include="Tokens.tests.ps1" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="growl\" />
