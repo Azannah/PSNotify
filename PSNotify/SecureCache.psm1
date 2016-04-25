@@ -1375,7 +1375,6 @@ function Protect-Data {
   )
 
   Begin {
-
     function private:encrypt_using_aesmanaged {
 
       Param (
@@ -1484,8 +1483,7 @@ function Protect-Data {
   }
   
   Process {
-
-    ## Attempt to serialize the object, and fail
+    ## Attempt to serialize the object
     try {
       $serialized_object = ConvertTo-SerializedObject -InputObject $InputObject
     } catch {
@@ -1497,7 +1495,7 @@ function Protect-Data {
     [Byte[]]$nonce = $Protector.GetNonce()
 
     ## Encrypt the serialized object using the specified protector type
-    [Byte[]]$encrypted_serialized_object
+    [Byte[]]$encrypted_serialized_object = $null
 
     switch ($Protector.GetProtectorType()) {
       {$_ -match "DPAPI"} {
@@ -1523,26 +1521,28 @@ function Protect-Data {
         break
       }
     }
-
+    
     if (-not $DontEmbeddIV) {
       $encrypted_serialized_object = private:embed_nonce_in_byte_array -nonce $nonce -data $encrypted_serialized_object
     }
 
     switch ($OutputEncoding) {
       {$_ -match "Base64String"} {
-        $return_object = [System.Convert]::ToBase64String($encrypted_serialized_object)
+        [string]$return_object = [System.Convert]::ToBase64String($encrypted_serialized_object)
         #return $encrypted_base64_object
       }
 
       {$_ -match "Bytes"} {
         #return $encrypted_serialized_object
-        $return_object = $encrypted_serialized_object
+        [Byte[]]$return_object = $encrypted_serialized_object
       }
     }
 
+    return $return_object
+
   }
 
-  End { return $return_object }
+  End {}
 }
 
 function ConvertTo-SerializedObject {

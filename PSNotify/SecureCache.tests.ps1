@@ -4,6 +4,7 @@
 @(
   "C:\Users\MatthewF\Source\Repos\PSNotify\PSNotify",            # Laptop (Zen)
   "C:\Users\matthew.johnson\Source\Repos\PSNotify\PSNotify"      # Desktop at work
+  "D:\Users\Matthew Johnson\Source\GitHub\PSNotify\PSNotify"     # Desktop at home
 ) | ? { Test-Path -Path $_ } | Set-Location
 
 #Import-Module .\EmbeddedResources.psm1
@@ -152,14 +153,8 @@ Describe "Protect-Data" {
       "a_datetime_object" = Get-Date
     }
 
-    function temp {
-      return "this is a fucking string"
-    }
-
     It "Outputs Base64 string with embedded initialization vector" {
       $encrypted_data_base64 = Protect-Data -Protector $aes_protector -InputObject $clear_data -OutputEncoding Base64String
-
-      $test = temp
 
       Write-Host "Encrypted Base64: " + $encrypted_data_base64
 
